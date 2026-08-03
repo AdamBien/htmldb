@@ -7,7 +7,7 @@ static final String PAGE_SUFFIX = ".html";
 static final String PROPERTIES_FILE = "app.properties";
 
 String name = MethodHandles.lookup().lookupClass().getName();
-String version = "2026-08-03.5";
+String version = "2026-08-03.6";
 Path dbDir = Path.of(".");
 
 void main(String... args) throws Exception {
@@ -138,9 +138,18 @@ void saveRecord(String table, String key, SortedMap<String, String> record) thro
             .map(entry -> "    <dt>%s</dt>\n    <dd>%s</dd>".formatted(escape(entry.getKey()), escape(entry.getValue())))
             .collect(Collectors.joining("\n"));
     var list = record.isEmpty() ? "  <dl></dl>" : "  <dl>\n%s\n  </dl>".formatted(definitions);
-    atomicWrite(recordPage(table, key), page(key, list));
+    atomicWrite(recordPage(table, key), page(key, list + "\n" + updatedFooter()));
     updateTableIndex(table);
     updateRootIndex();
+}
+
+String updatedFooter() {
+    var updated = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+    return """
+              <footer>
+                <p>updated <time datetime="%s">%s</time></p>
+              </footer>\
+            """.formatted(updated, updated);
 }
 
 SortedMap<String, String> fields(Path recordPage) throws Exception {

@@ -31,6 +31,9 @@ A record page:
     <dt>email</dt>
     <dd>joe@airhacks.com</dd>
   </dl>
+  <footer>
+    <p>updated <time datetime="2026-08-03T15:31:07Z">2026-08-03T15:31:07Z</time></p>
+  </footer>
 </main>
 ```
 
