@@ -1,9 +1,13 @@
 #!/usr/bin/env -S java --source 25
 
-import javax.xml.parsers.DocumentBuilderFactory;
+import module java.xml;
+
+static final String INDEX_PAGE = "index.html";
+static final String PAGE_SUFFIX = ".html";
+static final String PROPERTIES_FILE = "app.properties";
 
 String name = MethodHandles.lookup().lookupClass().getName();
-String version = "2026-08-03.4";
+String version = "2026-08-03.5";
 Path dbDir = Path.of(".");
 
 void main(String... args) throws Exception {
@@ -16,7 +20,7 @@ void main(String... args) throws Exception {
     switch (args[0]) {
         case "-help" -> help();
         case "-version" -> {}
-        case "tables" -> tableNames().forEach(IO::println);
+        case "tables" -> printLines(tableNames());
         default -> dispatch(args);
     }
 }
@@ -31,12 +35,8 @@ void dispatch(String... args) throws Exception {
         case "set" -> set(table, args);
         case "get" -> get(table, args);
         case "rm" -> rm(table, args);
-        case "keys" -> keys(table).forEach(IO::println);
-        case "list" -> {
-            for (var key : keys(table)) {
-                fields(recordPage(table, key)).forEach((field, value) -> IO.println(key + "\t" + field + "\t" + value));
-            }
-        }
+        case "keys" -> printLines(keys(table));
+        case "list" -> printLines(listing(table));
         default -> fail("unknown command: " + args[1]);
     }
 }
@@ -65,7 +65,7 @@ void set(String table, String... args) throws Exception {
         }
     }
     saveRecord(table, key, record);
-    Log.success("stored: " + table + "/" + key + ".html");
+    Log.success("stored: " + table + "/" + key + PAGE_SUFFIX);
 }
 
 void get(String table, String... args) throws Exception {
@@ -84,7 +84,27 @@ void get(String table, String... args) throws Exception {
         }
         IO.println(value);
     } else {
-        record.forEach((field, value) -> IO.println(field + "\t" + value));
+        printLines(recordLines("", record));
+    }
+}
+
+List<String> listing(String table) throws Exception {
+    var lines = new ArrayList<String>();
+    for (var key : keys(table)) {
+        lines.addAll(recordLines(key + "\t", fields(recordPage(table, key))));
+    }
+    return lines;
+}
+
+List<String> recordLines(String prefix, SortedMap<String, String> record) {
+    return record.entrySet().stream()
+            .map(entry -> prefix + entry.getKey() + "\t" + entry.getValue())
+            .toList();
+}
+
+void printLines(List<String> lines) {
+    if (!lines.isEmpty()) {
+        IO.println(String.join("\n", lines));
     }
 }
 
@@ -103,12 +123,12 @@ void rm(String table, String... args) throws Exception {
             fail("no such field: " + args[3]);
         }
         saveRecord(table, key, record);
-        Log.success("removed: " + args[3] + " from " + table + "/" + key + ".html");
+        Log.success("removed: " + args[3] + " from " + table + "/" + key + PAGE_SUFFIX);
     } else {
         Files.delete(page);
         updateTableIndex(table);
         updateRootIndex();
-        Log.success("removed: " + table + "/" + key + ".html");
+        Log.success("removed: " + table + "/" + key + PAGE_SUFFIX);
     }
 }
 
@@ -142,25 +162,33 @@ List<String> keys(String table) throws Exception {
     try (var pages = Files.list(folder)) {
         return pages
                 .map(page -> page.getFileName().toString())
-                .filter(fileName -> fileName.endsWith(".html") && !fileName.equals("index.html"))
-                .map(fileName -> fileName.substring(0, fileName.length() - ".html".length()))
+                .filter(this::isRecordPage)
+                .map(fileName -> fileName.substring(0, fileName.length() - PAGE_SUFFIX.length()))
                 .sorted()
                 .toList();
     }
 }
 
+boolean isRecordPage(String fileName) {
+    return fileName.endsWith(PAGE_SUFFIX) && !fileName.equals(INDEX_PAGE);
+}
+
 void updateTableIndex(String table) throws Exception {
     var links = keys(table).stream()
-            .map(key -> "      <li><a href=\"%s.html\">%s</a></li>".formatted(key, key))
+            .map(key -> link(key + PAGE_SUFFIX, key))
             .collect(Collectors.joining("\n"));
-    atomicWrite(dbDir.resolve(table).resolve("index.html"), page(table, navigation(links)));
+    atomicWrite(dbDir.resolve(table).resolve(INDEX_PAGE), page(table, navigation(links)));
 }
 
 void updateRootIndex() throws Exception {
     var links = tableNames().stream()
-            .map(table -> "      <li><a href=\"%s/index.html\">%s</a></li>".formatted(table, table))
+            .map(table -> link(table + "/" + INDEX_PAGE, table))
             .collect(Collectors.joining("\n"));
-    atomicWrite(dbDir.resolve("index.html"), page(name, navigation(links)));
+    atomicWrite(dbDir.resolve(INDEX_PAGE), page(name, navigation(links)));
+}
+
+String link(String href, String label) {
+    return "      <li><a href=\"%s\">%s</a></li>".formatted(href, label);
 }
 
 String navigation(String links) {
@@ -174,15 +202,19 @@ List<String> tableNames() throws Exception {
     try (var folders = Files.list(dbDir)) {
         return folders
                 .filter(Files::isDirectory)
-                .filter(folder -> Files.exists(folder.resolve("index.html")))
+                .filter(this::isTable)
                 .map(folder -> folder.getFileName().toString())
                 .sorted()
                 .toList();
     }
 }
 
+boolean isTable(Path folder) {
+    return Files.exists(folder.resolve(INDEX_PAGE));
+}
+
 Path recordPage(String table, String key) {
-    return dbDir.resolve(table).resolve(key + ".html");
+    return dbDir.resolve(table).resolve(key + PAGE_SUFFIX);
 }
 
 void validate(String identifier, String kind) {
@@ -221,8 +253,8 @@ void atomicWrite(Path target, String content) throws Exception {
 
 Properties loadConfiguration() throws Exception {
     var configuration = new Properties();
-    var global = Path.of(System.getProperty("user.home"), "." + name, "app.properties");
-    var local = Path.of("app.properties");
+    var global = Path.of(System.getProperty("user.home"), "." + name, PROPERTIES_FILE);
+    var local = Path.of(PROPERTIES_FILE);
     for (var candidate : List.of(global, local)) {
         if (Files.exists(candidate)) {
             try (var reader = Files.newBufferedReader(candidate)) {
