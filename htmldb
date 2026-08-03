@@ -1,0 +1,192 @@
+#!/usr/bin/env -S java --source 25
+
+import javax.xml.parsers.DocumentBuilderFactory;
+
+String name = MethodHandles.lookup().lookupClass().getName();
+String version = "2026-08-03.1";
+Path dbDir = Path.of(".");
+
+void main(String... args) throws Exception {
+    System.err.println(name + " " + version);
+    dbDir = Path.of(loadConfiguration().getProperty("db.dir", "."));
+    if (args.length == 0) {
+        help();
+        System.exit(1);
+    }
+    switch (args[0]) {
+        case "-help" -> help();
+        case "-version" -> {}
+        case "tables" -> tableNames().forEach(IO::println);
+        default -> dispatch(args);
+    }
+}
+
+void dispatch(String... args) throws Exception {
+    var table = args[0];
+    if (!table.matches("[A-Za-z0-9_][A-Za-z0-9_-]*")) {
+        fail("invalid table name: " + table);
+    }
+    if (args.length < 2) {
+        fail("missing command, see: " + name + " -help");
+    }
+    switch (args[1]) {
+        case "set" -> set(table, args);
+        case "get" -> get(table, args);
+        case "rm" -> rm(table, args);
+        case "keys" -> entries(table).keySet().forEach(IO::println);
+        case "list" -> entries(table).forEach((key, value) -> IO.println(key + "\t" + value));
+        default -> fail("unknown command: " + args[1]);
+    }
+}
+
+void set(String table, String... args) throws Exception {
+    if (args.length < 3) {
+        fail("usage: " + name + " <table> set <key> [value]");
+    }
+    var value = args.length > 3 ? args[3] : new String(System.in.readAllBytes(), StandardCharsets.UTF_8).strip();
+    var entries = Files.exists(tablePage(table)) ? entries(table) : new TreeMap<String, String>();
+    entries.put(args[2], value);
+    save(table, entries);
+}
+
+void get(String table, String... args) throws Exception {
+    if (args.length < 3) {
+        fail("usage: " + name + " <table> get <key>");
+    }
+    var value = entries(table).get(args[2]);
+    if (value == null) {
+        fail("no such key: " + args[2]);
+    }
+    IO.println(value);
+}
+
+void rm(String table, String... args) throws Exception {
+    if (args.length < 3) {
+        fail("usage: " + name + " <table> rm <key>");
+    }
+    var entries = entries(table);
+    if (entries.remove(args[2]) == null) {
+        fail("no such key: " + args[2]);
+    }
+    save(table, entries);
+}
+
+SortedMap<String, String> entries(String table) throws Exception {
+    var page = tablePage(table);
+    if (!Files.exists(page)) {
+        fail("no such table: " + table);
+    }
+    var document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(page.toFile());
+    var keys = document.getElementsByTagName("dt");
+    var values = document.getElementsByTagName("dd");
+    var entries = new TreeMap<String, String>();
+    for (var index = 0; index < Math.min(keys.getLength(), values.getLength()); index++) {
+        entries.put(keys.item(index).getTextContent(), values.item(index).getTextContent());
+    }
+    return entries;
+}
+
+void save(String table, SortedMap<String, String> entries) throws Exception {
+    var folder = dbDir.resolve(table);
+    Files.createDirectories(folder);
+    var definitions = entries.entrySet().stream()
+            .map(entry -> "    <dt>%s</dt>\n    <dd>%s</dd>".formatted(escape(entry.getKey()), escape(entry.getValue())))
+            .collect(Collectors.joining("\n"));
+    var list = entries.isEmpty() ? "  <dl></dl>" : "  <dl>\n%s\n  </dl>".formatted(definitions);
+    atomicWrite(folder.resolve("index.html"), page(table, list));
+    updateRootIndex();
+}
+
+void updateRootIndex() throws Exception {
+    var links = tableNames().stream()
+            .map(table -> "      <li><a href=\"%s/index.html\">%s</a></li>".formatted(table, table))
+            .collect(Collectors.joining("\n"));
+    var navigation = links.isEmpty() ? "  <nav><ul></ul></nav>" : "  <nav>\n    <ul>\n%s\n    </ul>\n  </nav>".formatted(links);
+    atomicWrite(dbDir.resolve("index.html"), page(name, navigation));
+}
+
+List<String> tableNames() throws Exception {
+    if (!Files.isDirectory(dbDir)) {
+        return List.of();
+    }
+    try (var folders = Files.list(dbDir)) {
+        return folders
+                .filter(Files::isDirectory)
+                .filter(folder -> Files.exists(folder.resolve("index.html")))
+                .map(folder -> folder.getFileName().toString())
+                .sorted()
+                .toList();
+    }
+}
+
+Path tablePage(String table) {
+    return dbDir.resolve(table).resolve("index.html");
+}
+
+String page(String title, String content) {
+    return """
+            <!DOCTYPE html>
+            <html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+            <head>
+              <meta charset="utf-8"/>
+              <title>%s</title>
+            </head>
+            <body>
+            <main>
+              <h1>%s</h1>
+            %s
+            </main>
+            </body>
+            </html>
+            """.formatted(escape(title), escape(title), content);
+}
+
+void atomicWrite(Path target, String content) throws Exception {
+    var temp = Files.createTempFile(target.getParent(), "." + name, ".tmp");
+    temp.toFile().setReadable(true, false);
+    Files.writeString(temp, content);
+    Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+}
+
+Properties loadConfiguration() throws Exception {
+    var configuration = new Properties();
+    var global = Path.of(System.getProperty("user.home"), "." + name, "app.properties");
+    var local = Path.of("app.properties");
+    for (var candidate : List.of(global, local)) {
+        if (Files.exists(candidate)) {
+            try (var reader = Files.newBufferedReader(candidate)) {
+                configuration.load(reader);
+            }
+        }
+    }
+    configuration.putAll(System.getProperties());
+    return configuration;
+}
+
+String escape(String text) {
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+}
+
+void fail(String message) {
+    System.err.println(message);
+    System.exit(1);
+}
+
+void help() {
+    IO.println("""
+            Usage: %s <table> <command> [arguments]
+
+            Commands:
+              <table> set <key> [value]  store a value (reads stdin when value is omitted)
+              <table> get <key>          print a value
+              <table> rm <key>           remove a key
+              <table> keys               print all keys, sorted
+              <table> list               print key<TAB>value lines
+              tables                     list all tables
+              -help                      show this help
+              -version                   show version
+
+            Configuration (zcfg): db.dir sets the database root (default: current directory)
+              ~/.%s/app.properties, ./app.properties, or -Ddb.dir=<path>
+            """.formatted(name, name));
+}
