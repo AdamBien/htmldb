@@ -7,7 +7,7 @@ static final String PAGE_SUFFIX = ".html";
 static final String PROPERTIES_FILE = "app.properties";
 
 String name = MethodHandles.lookup().lookupClass().getName();
-String version = "2026-08-03.7";
+String version = "2026-08-03.8";
 Path dbDir = Path.of(".");
 
 void main(String... args) throws Exception {
@@ -37,6 +37,7 @@ void dispatch(String... args) throws Exception {
         case "rm" -> rm(table, args);
         case "keys" -> printLines(keys(table));
         case "list" -> printLines(listing(table));
+        case "columns" -> columns(table, args);
         default -> fail("unknown command: " + args[1]);
     }
 }
@@ -49,7 +50,9 @@ void set(String table, String... args) throws Exception {
     validate(key, "key");
     var page = recordPage(table, key);
     var record = Files.exists(page) ? fields(page) : new TreeMap<String, String>();
-    if (args.length == 4 && !args[3].contains("=")) {
+    if (args.length == 4 && !args[3].contains("=") && args[3].contains(",")) {
+        record.putAll(positionalFields(table, args[3]));
+    } else if (args.length == 4 && !args[3].contains("=")) {
         validate(args[3], "field");
         record.put(args[3], new String(System.in.readAllBytes(), StandardCharsets.UTF_8).strip());
     } else {
@@ -86,6 +89,51 @@ void get(String table, String... args) throws Exception {
     } else {
         printLines(recordLines("", record));
     }
+}
+
+void columns(String table, String... args) throws Exception {
+    if (args.length < 3) {
+        printLines(columnNames(table).isEmpty() ? List.of() : List.of(String.join(",", columnNames(table))));
+        return;
+    }
+    var columns = Stream.of(args[2].split(",")).map(String::strip).toList();
+    for (var column : columns) {
+        validate(column, "field");
+    }
+    Files.createDirectories(dbDir.resolve(table));
+    updateTableIndex(table, columns);
+    updateRootIndex();
+    Log.success("columns for " + table + ": " + String.join(",", columns));
+}
+
+SortedMap<String, String> positionalFields(String table, String csv) throws Exception {
+    var columns = columnNames(table);
+    if (columns.isEmpty()) {
+        fail("no columns defined, run: " + name + " " + table + " columns <name,name,...>");
+    }
+    var values = csv.split(",", -1);
+    if (values.length > columns.size()) {
+        fail("%d values but only %d columns: %s".formatted(values.length, columns.size(), String.join(",", columns)));
+    }
+    var record = new TreeMap<String, String>();
+    for (var index = 0; index < values.length; index++) {
+        record.put(columns.get(index), values[index].strip());
+    }
+    return record;
+}
+
+List<String> columnNames(String table) throws Exception {
+    var index = dbDir.resolve(table).resolve(INDEX_PAGE);
+    if (!Files.exists(index)) {
+        return List.of();
+    }
+    var codes = parse(index).getElementsByTagName("code");
+    if (codes.getLength() == 0) {
+        return List.of();
+    }
+    return Stream.of(codes.item(0).getTextContent().split(","))
+            .map(String::strip)
+            .toList();
 }
 
 List<String> listing(String table) throws Exception {
@@ -152,8 +200,12 @@ String updatedFooter() {
             """.formatted(updated, updated);
 }
 
+Document parse(Path page) throws Exception {
+    return DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(page.toFile());
+}
+
 SortedMap<String, String> fields(Path recordPage) throws Exception {
-    var document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(recordPage.toFile());
+    var document = parse(recordPage);
     var names = document.getElementsByTagName("dt");
     var values = document.getElementsByTagName("dd");
     var record = new TreeMap<String, String>();
@@ -183,10 +235,19 @@ boolean isRecordPage(String fileName) {
 }
 
 void updateTableIndex(String table) throws Exception {
+    updateTableIndex(table, columnNames(table));
+}
+
+void updateTableIndex(String table, List<String> columns) throws Exception {
     var links = keys(table).stream()
             .map(key -> link(key + PAGE_SUFFIX, key))
             .collect(Collectors.joining("\n"));
-    atomicWrite(dbDir.resolve(table).resolve(INDEX_PAGE), page(table, breadcrumb("../" + INDEX_PAGE, name), navigation(links)));
+    var content = columnsSection(columns) + navigation(links);
+    atomicWrite(dbDir.resolve(table).resolve(INDEX_PAGE), page(table, breadcrumb("../" + INDEX_PAGE, name), content));
+}
+
+String columnsSection(List<String> columns) {
+    return columns.isEmpty() ? "" : "  <p>columns: <code>%s</code></p>\n".formatted(escape(String.join(", ", columns)));
 }
 
 void updateRootIndex() throws Exception {
@@ -310,6 +371,9 @@ void help() {
             Commands:
               <table> set <key> <field>=<value>...  store fields (merged into the record)
               <table> set <key> <field>             store one field, value from stdin
+              <table> set <key> <v1,v2,...>         store values positionally by table columns
+              <table> columns <name,name,...>       define column order for positional set
+              <table> columns                       print the column order
               <table> get <key>                     print all fields as field<TAB>value lines
               <table> get <key> <field>             print one field value
               <table> rm <key>                      remove a record

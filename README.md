@@ -44,6 +44,11 @@ Every page is valid HTML5 *and* well-formed XML. Fields are sorted, and a `set` 
 ```bash
 htmldb users set joe email=joe@airhacks.com blog=adambien.blog   # creates users/joe.html
 htmldb users set joe twitter=@AdamBien      # merges into the existing record
+
+# fast entry: define the column order once, then set values positionally
+htmldb users columns email,blog,twitter
+htmldb users set jane "jane@airhacks.com,janes.blog,@jane"
+htmldb users columns                        # print the column order
 htmldb users get joe                        # all fields as field<TAB>value lines
 htmldb users get joe email                  # → joe@airhacks.com
 echo "Java Champion" | htmldb users set joe bio   # field value from stdin
