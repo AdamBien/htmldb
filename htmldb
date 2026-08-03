@@ -3,11 +3,11 @@
 import javax.xml.parsers.DocumentBuilderFactory;
 
 String name = MethodHandles.lookup().lookupClass().getName();
-String version = "2026-08-03.3";
+String version = "2026-08-03.4";
 Path dbDir = Path.of(".");
 
 void main(String... args) throws Exception {
-    System.err.println(name + " " + version);
+    Log.system(name + " " + version);
     dbDir = Path.of(loadConfiguration().getProperty("db.dir", "."));
     if (args.length == 0) {
         help();
@@ -65,6 +65,7 @@ void set(String table, String... args) throws Exception {
         }
     }
     saveRecord(table, key, record);
+    Log.success("stored: " + table + "/" + key + ".html");
 }
 
 void get(String table, String... args) throws Exception {
@@ -102,10 +103,12 @@ void rm(String table, String... args) throws Exception {
             fail("no such field: " + args[3]);
         }
         saveRecord(table, key, record);
+        Log.success("removed: " + args[3] + " from " + table + "/" + key + ".html");
     } else {
         Files.delete(page);
         updateTableIndex(table);
         updateRootIndex();
+        Log.success("removed: " + table + "/" + key + ".html");
     }
 }
 
@@ -236,12 +239,12 @@ String escape(String text) {
 }
 
 void fail(String message) {
-    System.err.println(message);
+    Log.error(message);
     System.exit(1);
 }
 
 void help() {
-    IO.println("""
+    Log.user("""
             Usage: %s <table> <command> [arguments]
 
             Each record is its own XHTML page (<table>/<key>.html) holding a <dl> of fields.
@@ -264,4 +267,62 @@ void help() {
             Configuration (zcfg): db.dir sets the database root (default: current directory)
               ~/.%s/app.properties, ./app.properties, or -Ddb.dir=<path>
             """.formatted(name, name));
+}
+
+// zcl (https://github.com/AdamBien/zcl), trimmed; SYSTEM and SUCCESS write to
+// stderr here so stdout stays pure data for piping
+enum Log {
+
+    ERROR(Color.RED, System.err),
+    USER(Color.CYAN, System.out),
+    SYSTEM(Color.BLUE, System.err),
+    SUCCESS(Color.MAGENTA, System.err);
+
+    private PrintStream out;
+
+    enum Color {
+        RED("\033[38;2;220;50;47m"),          // Solarized Red #dc322f
+        MAGENTA("\033[38;2;211;54;130m"),     // Solarized Magenta #d33682
+        BLUE("\033[38;2;38;139;210m"),        // Solarized Blue #268bd2
+        CYAN("\033[38;2;42;161;152m");        // Solarized Cyan #2aa198
+
+        String code;
+
+        Color(String code) {
+            this.code = code;
+        }
+    }
+
+    private final String value;
+    private final static String RESET = "\u001B[0m";
+
+    private Log(Color color, PrintStream out) {
+        this.value = (color.code + "%s" + RESET);
+        this.out = out;
+    }
+
+    String formatted(String raw) {
+        return this.value.formatted(raw);
+    }
+
+    void out(String message) {
+        var colored = formatted(message);
+        this.out.println(colored);
+    }
+
+    public static void error(String message) {
+        Log.ERROR.out(message);
+    }
+
+    public static void user(String message) {
+        Log.USER.out(message);
+    }
+
+    public static void system(String message) {
+        Log.SYSTEM.out(message);
+    }
+
+    public static void success(String message) {
+        Log.SUCCESS.out(message);
+    }
 }
