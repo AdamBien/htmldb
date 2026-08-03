@@ -138,7 +138,7 @@ void saveRecord(String table, String key, SortedMap<String, String> record) thro
             .map(entry -> "    <dt>%s</dt>\n    <dd>%s</dd>".formatted(escape(entry.getKey()), escape(entry.getValue())))
             .collect(Collectors.joining("\n"));
     var list = record.isEmpty() ? "  <dl></dl>" : "  <dl>\n%s\n  </dl>".formatted(definitions);
-    atomicWrite(recordPage(table, key), page(key, list + "\n" + updatedFooter()));
+    atomicWrite(recordPage(table, key), page(key, breadcrumb(INDEX_PAGE, table), list + "\n" + updatedFooter()));
     updateTableIndex(table);
     updateRootIndex();
 }
@@ -186,14 +186,14 @@ void updateTableIndex(String table) throws Exception {
     var links = keys(table).stream()
             .map(key -> link(key + PAGE_SUFFIX, key))
             .collect(Collectors.joining("\n"));
-    atomicWrite(dbDir.resolve(table).resolve(INDEX_PAGE), page(table, navigation(links)));
+    atomicWrite(dbDir.resolve(table).resolve(INDEX_PAGE), page(table, breadcrumb("../" + INDEX_PAGE, name), navigation(links)));
 }
 
 void updateRootIndex() throws Exception {
     var links = tableNames().stream()
             .map(table -> link(table + "/" + INDEX_PAGE, table))
             .collect(Collectors.joining("\n"));
-    atomicWrite(dbDir.resolve(INDEX_PAGE), page(name, navigation(links)));
+    atomicWrite(dbDir.resolve(INDEX_PAGE), page(name, "", navigation(links)));
 }
 
 String link(String href, String label) {
@@ -235,7 +235,7 @@ void validate(String identifier, String kind) {
     }
 }
 
-String page(String title, String content) {
+String page(String title, String breadcrumb, String content) {
     return """
             <!DOCTYPE html>
             <html xmlns="http://www.w3.org/1999/xhtml" lang="en">
@@ -250,7 +250,15 @@ String page(String title, String content) {
             </main>
             </body>
             </html>
-            """.formatted(escape(title), escape(title), content);
+            """.formatted(escape(title), breadcrumb, escape(title), content);
+}
+
+String breadcrumb(String href, String label) {
+    return """
+            <header>
+              <nav><a href="%s">↑ %s</a></nav>
+            </header>
+            """.formatted(href, label);
 }
 
 void atomicWrite(Path target, String content) throws Exception {
