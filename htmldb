@@ -7,7 +7,7 @@ static final String PAGE_SUFFIX = ".html";
 static final String PROPERTIES_FILE = "app.properties";
 
 String name = MethodHandles.lookup().lookupClass().getName();
-String version = "2026-08-03.6";
+String version = "2026-08-03.7";
 Path dbDir = Path.of(".");
 
 void main(String... args) throws Exception {
@@ -242,9 +242,18 @@ String page(String title, String breadcrumb, String content) {
             <head>
               <meta charset="utf-8"/>
               <title>%s</title>
+              <style>
+                :root { color-scheme: light dark; }
+                body { font-family: system-ui, sans-serif; line-height: 1.6; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+                dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1.5rem; }
+                dt { font-weight: 600; }
+                dd { margin: 0; }
+                nav ul { list-style: none; padding: 0; }
+                footer { font-size: 0.8rem; opacity: 0.6; }
+              </style>
             </head>
             <body>
-            <main>
+            %s<main>
               <h1>%s</h1>
             %s
             </main>
