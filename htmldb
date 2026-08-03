@@ -3,7 +3,7 @@
 import javax.xml.parsers.DocumentBuilderFactory;
 
 String name = MethodHandles.lookup().lookupClass().getName();
-String version = "2026-08-03.2";
+String version = "2026-08-03.3";
 Path dbDir = Path.of(".");
 
 void main(String... args) throws Exception {
@@ -34,7 +34,7 @@ void dispatch(String... args) throws Exception {
         case "keys" -> keys(table).forEach(IO::println);
         case "list" -> {
             for (var key : keys(table)) {
-                IO.println(key + "\t" + value(recordPage(table, key)));
+                fields(recordPage(table, key)).forEach((field, value) -> IO.println(key + "\t" + field + "\t" + value));
             }
         }
         default -> fail("unknown command: " + args[1]);
@@ -42,40 +42,93 @@ void dispatch(String... args) throws Exception {
 }
 
 void set(String table, String... args) throws Exception {
-    if (args.length < 3) {
-        fail("usage: " + name + " <table> set <key> [value]");
+    if (args.length < 4) {
+        fail("usage: " + name + " <table> set <key> <field>=<value>... | <field> (value from stdin)");
     }
     var key = args[2];
     validate(key, "key");
-    var value = args.length > 3 ? args[3] : new String(System.in.readAllBytes(), StandardCharsets.UTF_8).strip();
-    Files.createDirectories(dbDir.resolve(table));
-    atomicWrite(recordPage(table, key), page(key, "  <p>%s</p>".formatted(escape(value))));
-    updateTableIndex(table);
-    updateRootIndex();
+    var page = recordPage(table, key);
+    var record = Files.exists(page) ? fields(page) : new TreeMap<String, String>();
+    if (args.length == 4 && !args[3].contains("=")) {
+        validate(args[3], "field");
+        record.put(args[3], new String(System.in.readAllBytes(), StandardCharsets.UTF_8).strip());
+    } else {
+        for (var index = 3; index < args.length; index++) {
+            var assignment = args[index];
+            var separator = assignment.indexOf('=');
+            if (separator < 1) {
+                fail("expected <field>=<value>, got: " + assignment);
+            }
+            var field = assignment.substring(0, separator);
+            validate(field, "field");
+            record.put(field, assignment.substring(separator + 1));
+        }
+    }
+    saveRecord(table, key, record);
 }
 
 void get(String table, String... args) throws Exception {
     if (args.length < 3) {
-        fail("usage: " + name + " <table> get <key>");
+        fail("usage: " + name + " <table> get <key> [field]");
     }
     var page = recordPage(table, args[2]);
     if (!Files.exists(page)) {
         fail("no such key: " + args[2]);
     }
-    IO.println(value(page));
+    var record = fields(page);
+    if (args.length > 3) {
+        var value = record.get(args[3]);
+        if (value == null) {
+            fail("no such field: " + args[3]);
+        }
+        IO.println(value);
+    } else {
+        record.forEach((field, value) -> IO.println(field + "\t" + value));
+    }
 }
 
 void rm(String table, String... args) throws Exception {
     if (args.length < 3) {
-        fail("usage: " + name + " <table> rm <key>");
+        fail("usage: " + name + " <table> rm <key> [field]");
     }
-    var page = recordPage(table, args[2]);
+    var key = args[2];
+    var page = recordPage(table, key);
     if (!Files.exists(page)) {
-        fail("no such key: " + args[2]);
+        fail("no such key: " + key);
     }
-    Files.delete(page);
+    if (args.length > 3) {
+        var record = fields(page);
+        if (record.remove(args[3]) == null) {
+            fail("no such field: " + args[3]);
+        }
+        saveRecord(table, key, record);
+    } else {
+        Files.delete(page);
+        updateTableIndex(table);
+        updateRootIndex();
+    }
+}
+
+void saveRecord(String table, String key, SortedMap<String, String> record) throws Exception {
+    Files.createDirectories(dbDir.resolve(table));
+    var definitions = record.entrySet().stream()
+            .map(entry -> "    <dt>%s</dt>\n    <dd>%s</dd>".formatted(escape(entry.getKey()), escape(entry.getValue())))
+            .collect(Collectors.joining("\n"));
+    var list = record.isEmpty() ? "  <dl></dl>" : "  <dl>\n%s\n  </dl>".formatted(definitions);
+    atomicWrite(recordPage(table, key), page(key, list));
     updateTableIndex(table);
     updateRootIndex();
+}
+
+SortedMap<String, String> fields(Path recordPage) throws Exception {
+    var document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(recordPage.toFile());
+    var names = document.getElementsByTagName("dt");
+    var values = document.getElementsByTagName("dd");
+    var record = new TreeMap<String, String>();
+    for (var index = 0; index < Math.min(names.getLength(), values.getLength()); index++) {
+        record.put(names.item(index).getTextContent(), values.item(index).getTextContent());
+    }
+    return record;
 }
 
 List<String> keys(String table) throws Exception {
@@ -91,12 +144,6 @@ List<String> keys(String table) throws Exception {
                 .sorted()
                 .toList();
     }
-}
-
-String value(Path recordPage) throws Exception {
-    var document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(recordPage.toFile());
-    var paragraphs = document.getElementsByTagName("p");
-    return paragraphs.getLength() == 0 ? "" : paragraphs.item(0).getTextContent();
 }
 
 void updateTableIndex(String table) throws Exception {
@@ -136,8 +183,11 @@ Path recordPage(String table, String key) {
 }
 
 void validate(String identifier, String kind) {
-    if (!identifier.matches("[A-Za-z0-9_][A-Za-z0-9_-]*") || identifier.equals("index")) {
-        fail("invalid %s name: %s (allowed: letters, digits, _ and -; 'index' is reserved)".formatted(kind, identifier));
+    if (!identifier.matches("[A-Za-z0-9_][A-Za-z0-9_-]*")) {
+        fail("invalid %s name: %s (allowed: letters, digits, _ and -)".formatted(kind, identifier));
+    }
+    if (!kind.equals("field") && identifier.equals("index")) {
+        fail("'index' is a reserved %s name".formatted(kind));
     }
 }
 
@@ -194,19 +244,22 @@ void help() {
     IO.println("""
             Usage: %s <table> <command> [arguments]
 
-            Each record is its own XHTML page: <table>/<key>.html
+            Each record is its own XHTML page (<table>/<key>.html) holding a <dl> of fields.
 
             Commands:
-              <table> set <key> [value]  store a value (reads stdin when value is omitted)
-              <table> get <key>          print a value
-              <table> rm <key>           remove a key
-              <table> keys               print all keys, sorted
-              <table> list               print key<TAB>value lines
-              tables                     list all tables
-              -help                      show this help
-              -version                   show version
+              <table> set <key> <field>=<value>...  store fields (merged into the record)
+              <table> set <key> <field>             store one field, value from stdin
+              <table> get <key>                     print all fields as field<TAB>value lines
+              <table> get <key> <field>             print one field value
+              <table> rm <key>                      remove a record
+              <table> rm <key> <field>              remove one field
+              <table> keys                          print all keys, sorted
+              <table> list                          print key<TAB>field<TAB>value lines
+              tables                                list all tables
+              -help                                 show this help
+              -version                              show version
 
-            Table and key names: letters, digits, _ and - ('index' is reserved)
+            Table, key and field names: letters, digits, _ and - ('index' is a reserved table/key name)
 
             Configuration (zcfg): db.dir sets the database root (default: current directory)
               ~/.%s/app.properties, ./app.properties, or -Ddb.dir=<path>

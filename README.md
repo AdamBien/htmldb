@@ -4,32 +4,49 @@ Zero-dependency, single-file Java 25 CLI that persists key-value data as semanti
 
 ## Layout
 
-Each table is a folder, each record is its own XHTML page. Per-table and root `index.html` pages link everything together — the database is a browsable website:
+Each table is a folder, each record is its own XHTML page holding its fields as a `<dl>` definition list. Per-table and root `index.html` pages link everything together — the database is a browsable website:
 
 ```
 .
 ├── index.html            # root index: <nav> linking all tables
 ├── config/
 │   ├── index.html        # <nav> linking all config records
-│   └── port.html         # one record: <h1>port</h1><p>8080</p>
+│   └── app.html
 └── users/
     ├── index.html
     ├── jane.html
-    └── joe.html
+    └── joe.html          # <h1>joe</h1> + <dl> with email, blog, ...
 ```
 
-Every page is valid HTML5 *and* well-formed XML. A `set` touches only that record's file, so git history and diffs are per record. Table and key names are filename-safe slugs (letters, digits, `_`, `-`; `index` is reserved); values are arbitrary text.
+A record page:
+
+```xml
+<main>
+  <h1>joe</h1>
+  <dl>
+    <dt>blog</dt>
+    <dd>adambien.blog</dd>
+    <dt>email</dt>
+    <dd>joe@airhacks.com</dd>
+  </dl>
+</main>
+```
+
+Every page is valid HTML5 *and* well-formed XML. Fields are sorted, and a `set` touches only that record's file — git history and diffs are per record. Table, key, and field names are filename-safe slugs (letters, digits, `_`, `-`; `index` is a reserved table/key name); field values are arbitrary text.
 
 ## Usage
 
 ```bash
-htmldb users set joe joe@airhacks.com   # creates users/joe.html on demand
-htmldb users get joe                    # → joe@airhacks.com
-echo "8080" | htmldb config set port    # value from stdin
-htmldb users keys                       # all keys, sorted
-htmldb config list                      # key<TAB>value lines
-htmldb users rm joe
-htmldb tables                           # → config, users
+htmldb users set joe email=joe@airhacks.com blog=adambien.blog   # creates users/joe.html
+htmldb users set joe twitter=@AdamBien      # merges into the existing record
+htmldb users get joe                        # all fields as field<TAB>value lines
+htmldb users get joe email                  # → joe@airhacks.com
+echo "Java Champion" | htmldb users set joe bio   # field value from stdin
+htmldb users rm joe twitter                 # remove one field
+htmldb users rm joe                         # remove the record
+htmldb users keys                           # all keys, sorted
+htmldb users list                           # key<TAB>field<TAB>value lines
+htmldb tables                               # → config, users
 ```
 
 Data goes to stdout, diagnostics and the version banner to stderr — pipe-friendly. Exit code 0 on success, 1 on missing keys, missing tables, or usage errors.
