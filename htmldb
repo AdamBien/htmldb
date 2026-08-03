@@ -3,7 +3,7 @@
 import javax.xml.parsers.DocumentBuilderFactory;
 
 String name = MethodHandles.lookup().lookupClass().getName();
-String version = "2026-08-03.1";
+String version = "2026-08-03.2";
 Path dbDir = Path.of(".");
 
 void main(String... args) throws Exception {
@@ -23,9 +23,7 @@ void main(String... args) throws Exception {
 
 void dispatch(String... args) throws Exception {
     var table = args[0];
-    if (!table.matches("[A-Za-z0-9_][A-Za-z0-9_-]*")) {
-        fail("invalid table name: " + table);
-    }
+    validate(table, "table");
     if (args.length < 2) {
         fail("missing command, see: " + name + " -help");
     }
@@ -33,8 +31,12 @@ void dispatch(String... args) throws Exception {
         case "set" -> set(table, args);
         case "get" -> get(table, args);
         case "rm" -> rm(table, args);
-        case "keys" -> entries(table).keySet().forEach(IO::println);
-        case "list" -> entries(table).forEach((key, value) -> IO.println(key + "\t" + value));
+        case "keys" -> keys(table).forEach(IO::println);
+        case "list" -> {
+            for (var key : keys(table)) {
+                IO.println(key + "\t" + value(recordPage(table, key)));
+            }
+        }
         default -> fail("unknown command: " + args[1]);
     }
 }
@@ -43,66 +45,76 @@ void set(String table, String... args) throws Exception {
     if (args.length < 3) {
         fail("usage: " + name + " <table> set <key> [value]");
     }
+    var key = args[2];
+    validate(key, "key");
     var value = args.length > 3 ? args[3] : new String(System.in.readAllBytes(), StandardCharsets.UTF_8).strip();
-    var entries = Files.exists(tablePage(table)) ? entries(table) : new TreeMap<String, String>();
-    entries.put(args[2], value);
-    save(table, entries);
+    Files.createDirectories(dbDir.resolve(table));
+    atomicWrite(recordPage(table, key), page(key, "  <p>%s</p>".formatted(escape(value))));
+    updateTableIndex(table);
+    updateRootIndex();
 }
 
 void get(String table, String... args) throws Exception {
     if (args.length < 3) {
         fail("usage: " + name + " <table> get <key>");
     }
-    var value = entries(table).get(args[2]);
-    if (value == null) {
+    var page = recordPage(table, args[2]);
+    if (!Files.exists(page)) {
         fail("no such key: " + args[2]);
     }
-    IO.println(value);
+    IO.println(value(page));
 }
 
 void rm(String table, String... args) throws Exception {
     if (args.length < 3) {
         fail("usage: " + name + " <table> rm <key>");
     }
-    var entries = entries(table);
-    if (entries.remove(args[2]) == null) {
+    var page = recordPage(table, args[2]);
+    if (!Files.exists(page)) {
         fail("no such key: " + args[2]);
     }
-    save(table, entries);
+    Files.delete(page);
+    updateTableIndex(table);
+    updateRootIndex();
 }
 
-SortedMap<String, String> entries(String table) throws Exception {
-    var page = tablePage(table);
-    if (!Files.exists(page)) {
+List<String> keys(String table) throws Exception {
+    var folder = dbDir.resolve(table);
+    if (!Files.isDirectory(folder)) {
         fail("no such table: " + table);
     }
-    var document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(page.toFile());
-    var keys = document.getElementsByTagName("dt");
-    var values = document.getElementsByTagName("dd");
-    var entries = new TreeMap<String, String>();
-    for (var index = 0; index < Math.min(keys.getLength(), values.getLength()); index++) {
-        entries.put(keys.item(index).getTextContent(), values.item(index).getTextContent());
+    try (var pages = Files.list(folder)) {
+        return pages
+                .map(page -> page.getFileName().toString())
+                .filter(fileName -> fileName.endsWith(".html") && !fileName.equals("index.html"))
+                .map(fileName -> fileName.substring(0, fileName.length() - ".html".length()))
+                .sorted()
+                .toList();
     }
-    return entries;
 }
 
-void save(String table, SortedMap<String, String> entries) throws Exception {
-    var folder = dbDir.resolve(table);
-    Files.createDirectories(folder);
-    var definitions = entries.entrySet().stream()
-            .map(entry -> "    <dt>%s</dt>\n    <dd>%s</dd>".formatted(escape(entry.getKey()), escape(entry.getValue())))
+String value(Path recordPage) throws Exception {
+    var document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(recordPage.toFile());
+    var paragraphs = document.getElementsByTagName("p");
+    return paragraphs.getLength() == 0 ? "" : paragraphs.item(0).getTextContent();
+}
+
+void updateTableIndex(String table) throws Exception {
+    var links = keys(table).stream()
+            .map(key -> "      <li><a href=\"%s.html\">%s</a></li>".formatted(key, key))
             .collect(Collectors.joining("\n"));
-    var list = entries.isEmpty() ? "  <dl></dl>" : "  <dl>\n%s\n  </dl>".formatted(definitions);
-    atomicWrite(folder.resolve("index.html"), page(table, list));
-    updateRootIndex();
+    atomicWrite(dbDir.resolve(table).resolve("index.html"), page(table, navigation(links)));
 }
 
 void updateRootIndex() throws Exception {
     var links = tableNames().stream()
             .map(table -> "      <li><a href=\"%s/index.html\">%s</a></li>".formatted(table, table))
             .collect(Collectors.joining("\n"));
-    var navigation = links.isEmpty() ? "  <nav><ul></ul></nav>" : "  <nav>\n    <ul>\n%s\n    </ul>\n  </nav>".formatted(links);
-    atomicWrite(dbDir.resolve("index.html"), page(name, navigation));
+    atomicWrite(dbDir.resolve("index.html"), page(name, navigation(links)));
+}
+
+String navigation(String links) {
+    return links.isEmpty() ? "  <nav><ul></ul></nav>" : "  <nav>\n    <ul>\n%s\n    </ul>\n  </nav>".formatted(links);
 }
 
 List<String> tableNames() throws Exception {
@@ -119,8 +131,14 @@ List<String> tableNames() throws Exception {
     }
 }
 
-Path tablePage(String table) {
-    return dbDir.resolve(table).resolve("index.html");
+Path recordPage(String table, String key) {
+    return dbDir.resolve(table).resolve(key + ".html");
+}
+
+void validate(String identifier, String kind) {
+    if (!identifier.matches("[A-Za-z0-9_][A-Za-z0-9_-]*") || identifier.equals("index")) {
+        fail("invalid %s name: %s (allowed: letters, digits, _ and -; 'index' is reserved)".formatted(kind, identifier));
+    }
 }
 
 String page(String title, String content) {
@@ -176,6 +194,8 @@ void help() {
     IO.println("""
             Usage: %s <table> <command> [arguments]
 
+            Each record is its own XHTML page: <table>/<key>.html
+
             Commands:
               <table> set <key> [value]  store a value (reads stdin when value is omitted)
               <table> get <key>          print a value
@@ -185,6 +205,8 @@ void help() {
               tables                     list all tables
               -help                      show this help
               -version                   show version
+
+            Table and key names: letters, digits, _ and - ('index' is reserved)
 
             Configuration (zcfg): db.dir sets the database root (default: current directory)
               ~/.%s/app.properties, ./app.properties, or -Ddb.dir=<path>

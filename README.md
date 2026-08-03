@@ -4,21 +4,26 @@ Zero-dependency, single-file Java 25 CLI that persists key-value data as semanti
 
 ## Layout
 
-Each table is a folder with an `index.html` holding its entries as a `<dl>` definition list. A root `index.html` links all tables:
+Each table is a folder, each record is its own XHTML page. Per-table and root `index.html` pages link everything together — the database is a browsable website:
 
 ```
 .
-├── index.html          # root index: <nav> linking all tables
-├── config/index.html   # <dl> with all config entries
-└── users/index.html    # <dl> with all user entries
+├── index.html            # root index: <nav> linking all tables
+├── config/
+│   ├── index.html        # <nav> linking all config records
+│   └── port.html         # one record: <h1>port</h1><p>8080</p>
+└── users/
+    ├── index.html
+    ├── jane.html
+    └── joe.html
 ```
 
-Every page is valid HTML5 *and* well-formed XML. Entries are sorted by key, so writes produce minimal, stable git diffs.
+Every page is valid HTML5 *and* well-formed XML. A `set` touches only that record's file, so git history and diffs are per record. Table and key names are filename-safe slugs (letters, digits, `_`, `-`; `index` is reserved); values are arbitrary text.
 
 ## Usage
 
 ```bash
-htmldb users set joe joe@airhacks.com   # creates users/index.html on demand
+htmldb users set joe joe@airhacks.com   # creates users/joe.html on demand
 htmldb users get joe                    # → joe@airhacks.com
 echo "8080" | htmldb config set port    # value from stdin
 htmldb users keys                       # all keys, sorted
