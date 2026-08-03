@@ -1,5 +1,7 @@
 # htmldb
 
+**The storage format is also the UI.**
+
 Zero-dependency, single-file Java 25 CLI that persists key-value data as semantic XHTML. The database is a folder of valid HTML pages: view it in any browser, parse it as XML, diff it with git. Atomic writes, no build tool, no libraries — install on PATH and use it like any shell command.
 
 ## Layout
