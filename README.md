@@ -49,6 +49,11 @@ htmldb users set adam twitter=@AdamBien      # merges into the existing record
 htmldb users columns email,blog,twitter
 htmldb users set jane "jane@airhacks.com,janes.blog,@jane"
 htmldb users columns                        # print the column order
+
+# note taking: add stores values positionally under a generated timestamp key
+htmldb talks columns title,description
+htmldb talks add "Java 25" "What's new in the source launcher"   # → talks/2026-08-04-142122.html
+
 htmldb users get joe                        # all fields as field<TAB>value lines
 htmldb users get joe email                  # → joe@airhacks.com
 echo "Java Champion" | htmldb users set joe bio   # field value from stdin
@@ -60,6 +65,18 @@ htmldb tables                               # → config, users
 ```
 
 Data goes to stdout, diagnostics and the version banner to stderr — pipe-friendly. Exit code 0 on success, 1 on missing keys, missing tables, or usage errors.
+
+## Dedicated CLIs
+
+A symlink named after a table becomes a preconfigured tool (busybox-style) — the script derives its identity from the invoked file name and prepends it as the table:
+
+```bash
+ln -s /usr/local/bin/htmldb /usr/local/bin/talks
+talks columns title,description
+talks add "Java 25" "What's new in the source launcher"
+```
+
+Each symlink also reads its own global configuration (`~/.talks/app.properties`), so every dedicated CLI can point `db.dir` at its own database.
 
 ## Configuration
 
