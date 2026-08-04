@@ -43,7 +43,7 @@ Every page is valid HTML5 *and* well-formed XML. Fields are sorted, and a `set` 
 
 ```bash
 htmldb users set joe email=joe@airhacks.com blog=adambien.blog   # creates users/joe.html
-htmldb users set joe twitter=@AdamBien      # merges into the existing record
+htmldb users set adam twitter=@AdamBien      # merges into the existing record
 
 # fast entry: define the column order once, then set values positionally
 htmldb users columns email,blog,twitter
@@ -75,12 +75,17 @@ db.dir=/path/to/database
 
 ## Installation
 
-Requires Java 25+.
+Requires Java 25 or later.
 
 ```bash
+curl -O https://raw.githubusercontent.com/AdamBien/htmldb/main/htmldb
 chmod +x htmldb
+./htmldb -help
+```
 
-# install system-wide (pick one)
+Copy `htmldb` to a directory in your PATH for system-wide use:
+
+```bash
 sudo cp htmldb /usr/local/bin/
 # or symlink for development
 sudo ln -s $(pwd)/htmldb /usr/local/bin/htmldb
