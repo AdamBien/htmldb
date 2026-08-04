@@ -5,24 +5,37 @@ import module java.xml;
 static final String INDEX_PAGE = "index.html";
 static final String PAGE_SUFFIX = ".html";
 static final String PROPERTIES_FILE = "app.properties";
+static final String TOOL = "htmldb";
 
 String name = MethodHandles.lookup().lookupClass().getName();
-String version = "2026-08-03.8";
+String version = "2026-08-04.1";
 Path dbDir = Path.of(".");
 
 void main(String... args) throws Exception {
     Log.system(name + " " + version);
     dbDir = Path.of(loadConfiguration().getProperty("db.dir", "."));
-    if (args.length == 0) {
+    var arguments = tableQualified(args);
+    if (arguments.length == 0) {
         help();
         System.exit(1);
     }
-    switch (args[0]) {
+    switch (arguments[0]) {
         case "-help" -> help();
         case "-version" -> {}
         case "tables" -> printLines(tableNames());
-        default -> dispatch(args);
+        default -> dispatch(arguments);
     }
+}
+
+/// Turns a symlink persona into a dedicated CLI: a script invoked under a
+/// table's name (busybox-style) has that name as its implicit class, so the
+/// table is prepended to the arguments. The real [#TOOL] name and any leading
+/// flag bypass this.
+String[] tableQualified(String... args) {
+    if (name.equals(TOOL) || args.length == 0 || args[0].startsWith("-")) {
+        return args;
+    }
+    return Stream.concat(Stream.of(name), Stream.of(args)).toArray(String[]::new);
 }
 
 void dispatch(String... args) throws Exception {
@@ -33,6 +46,7 @@ void dispatch(String... args) throws Exception {
     }
     switch (args[1]) {
         case "set" -> set(table, args);
+        case "add" -> add(table, args);
         case "get" -> get(table, args);
         case "rm" -> rm(table, args);
         case "keys" -> printLines(keys(table));
@@ -42,6 +56,10 @@ void dispatch(String... args) throws Exception {
     }
 }
 
+/// Merges fields into an existing record (creating it if absent). Three input
+/// shapes, tried in order: a lone comma-bearing argument is positional CSV by
+/// column order, a lone bare name reads its value from stdin, otherwise each
+/// argument is a `field=value` pair.
 void set(String table, String... args) throws Exception {
     if (args.length < 4) {
         fail("usage: " + name + " <table> set <key> <field>=<value>... | <field> (value from stdin)");
@@ -71,6 +89,34 @@ void set(String table, String... args) throws Exception {
     Log.success("stored: " + table + "/" + key + PAGE_SUFFIX);
 }
 
+/// Appends a record under a generated timestamp key. Each value is a separate
+/// shell argument (not CSV), so field values may themselves contain commas.
+void add(String table, String... args) throws Exception {
+    if (args.length < 3) {
+        fail("usage: " + commandPrefix(table) + " add <value>...");
+    }
+    var key = generatedKey(table);
+    saveRecord(table, key, positionalFields(table, List.of(args).subList(2, args.length)));
+    Log.success("added: " + table + "/" + key + PAGE_SUFFIX);
+}
+
+/// Builds a sortable second-resolution timestamp key, suffixing `-2`, `-3`… on
+/// same-second collisions so a rapid burst of adds never silently overwrites.
+String generatedKey(String table) {
+    var timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd-HHmmss"));
+    var key = timestamp;
+    for (var counter = 2; Files.exists(recordPage(table, key)); counter++) {
+        key = timestamp + "-" + counter;
+    }
+    return key;
+}
+
+/// Renders the command prefix for usage hints so a symlink persona shows
+/// `talks add …` rather than the doubled `talks talks add …`.
+String commandPrefix(String table) {
+    return name.equals(table) ? name : name + " " + table;
+}
+
 void get(String table, String... args) throws Exception {
     if (args.length < 3) {
         fail("usage: " + name + " <table> get <key> [field]");
@@ -91,6 +137,8 @@ void get(String table, String... args) throws Exception {
     }
 }
 
+/// Defines (or, without arguments, prints) the positional column order used by
+/// `set` and `add`, persisting it into the table's generated `index.html`.
 void columns(String table, String... args) throws Exception {
     if (args.length < 3) {
         printLines(columnNames(table).isEmpty() ? List.of() : List.of(String.join(",", columnNames(table))));
@@ -106,22 +154,31 @@ void columns(String table, String... args) throws Exception {
     Log.success("columns for " + table + ": " + String.join(",", columns));
 }
 
+/// CSV overload for `set`: splits on commas with a `-1` limit so trailing empty
+/// values still map to their columns.
 SortedMap<String, String> positionalFields(String table, String csv) throws Exception {
+    return positionalFields(table, List.of(csv.split(",", -1)));
+}
+
+/// Maps values onto the table's declared columns by position; requires columns
+/// to be defined and rejects more values than there are columns.
+SortedMap<String, String> positionalFields(String table, List<String> values) throws Exception {
     var columns = columnNames(table);
     if (columns.isEmpty()) {
-        fail("no columns defined, run: " + name + " " + table + " columns <name,name,...>");
+        fail("no columns defined, run: " + commandPrefix(table) + " columns <name,name,...>");
     }
-    var values = csv.split(",", -1);
-    if (values.length > columns.size()) {
-        fail("%d values but only %d columns: %s".formatted(values.length, columns.size(), String.join(",", columns)));
+    if (values.size() > columns.size()) {
+        fail("%d values but only %d columns: %s".formatted(values.size(), columns.size(), String.join(",", columns)));
     }
     var record = new TreeMap<String, String>();
-    for (var index = 0; index < values.length; index++) {
-        record.put(columns.get(index), values[index].strip());
+    for (var index = 0; index < values.size(); index++) {
+        record.put(columns.get(index), values.get(index).strip());
     }
     return record;
 }
 
+/// Reads the declared column order from the `<code>` element that [#columns]
+/// writes into the table's `index.html`.
 List<String> columnNames(String table) throws Exception {
     var index = dbDir.resolve(table).resolve(INDEX_PAGE);
     if (!Files.exists(index)) {
@@ -180,6 +237,8 @@ void rm(String table, String... args) throws Exception {
     }
 }
 
+/// Serialises the record to its XHTML page and regenerates the affected table
+/// and root index navigation so the browsable site stays consistent.
 void saveRecord(String table, String key, SortedMap<String, String> record) throws Exception {
     Files.createDirectories(dbDir.resolve(table));
     var definitions = record.entrySet().stream()
@@ -204,6 +263,8 @@ Document parse(Path page) throws Exception {
     return DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(page.toFile());
 }
 
+/// Reconstructs a record by pairing `<dt>`/`<dd>` elements — the XHTML page is
+/// both the on-disk storage format and the browsable UI.
 SortedMap<String, String> fields(Path recordPage) throws Exception {
     var document = parse(recordPage);
     var names = document.getElementsByTagName("dt");
@@ -287,6 +348,8 @@ Path recordPage(String table, String key) {
     return dbDir.resolve(table).resolve(key + PAGE_SUFFIX);
 }
 
+/// Enforces the name grammar and rejects `index` as a table or key name, since
+/// every table folder owns a generated `index.html`.
 void validate(String identifier, String kind) {
     if (!identifier.matches("[A-Za-z0-9_][A-Za-z0-9_-]*")) {
         fail("invalid %s name: %s (allowed: letters, digits, _ and -)".formatted(kind, identifier));
@@ -331,6 +394,8 @@ String breadcrumb(String href, String label) {
             """.formatted(href, label);
 }
 
+/// Writes via a temp file plus `ATOMIC_MOVE` so concurrent readers (browsers,
+/// git) never observe a half-written page.
 void atomicWrite(Path target, String content) throws Exception {
     var temp = Files.createTempFile(target.getParent(), "." + name, ".tmp");
     temp.toFile().setReadable(true, false);
@@ -338,6 +403,9 @@ void atomicWrite(Path target, String content) throws Exception {
     Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
 }
 
+/// Layers configuration global, then local, then system properties, so
+/// `-Ddb.dir` overrides the files. The global path `~/.<name>/` follows the
+/// symlink persona.
 Properties loadConfiguration() throws Exception {
     var configuration = new Properties();
     var global = Path.of(System.getProperty("user.home"), "." + name, PROPERTIES_FILE);
@@ -372,7 +440,8 @@ void help() {
               <table> set <key> <field>=<value>...  store fields (merged into the record)
               <table> set <key> <field>             store one field, value from stdin
               <table> set <key> <v1,v2,...>         store values positionally by table columns
-              <table> columns <name,name,...>       define column order for positional set
+              <table> add <value>...                add a record with a generated timestamp key
+              <table> columns <name,name,...>       define column order for positional set and add
               <table> columns                       print the column order
               <table> get <key>                     print all fields as field<TAB>value lines
               <table> get <key> <field>             print one field value
@@ -386,9 +455,12 @@ void help() {
 
             Table, key and field names: letters, digits, _ and - ('index' is a reserved table/key name)
 
+            A symlink named after a table becomes a dedicated CLI with its own configuration:
+              ln -s %s talks && talks add "Java 25" "notes"
+
             Configuration (zcfg): db.dir sets the database root (default: current directory)
               ~/.%s/app.properties, ./app.properties, or -Ddb.dir=<path>
-            """.formatted(name, name));
+            """.formatted(name, TOOL, name));
 }
 
 // zcl (https://github.com/AdamBien/zcl), trimmed; SYSTEM and SUCCESS write to
