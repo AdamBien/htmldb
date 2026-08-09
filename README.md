@@ -39,7 +39,7 @@ A record page:
 
 In a table index each record is linked by its **first column's value**, falling back to the key when no columns are defined or the field is empty. A generated timestamp key identifies a record but says nothing about it, so `talks columns title,description` makes the index read as a list of titles.
 
-Every page is valid HTML5 *and* well-formed XML. Fields are sorted, and a `set` touches only that record's file — git history and diffs are per record. Table, key, and field names are filename-safe slugs (letters, digits, `_`, `-`; `index` is a reserved table/key name); field values are arbitrary text.
+Every page is valid HTML5 *and* well-formed XML. Fields follow the declared column order — in the page, in `get` and in `list` — with any fields outside the schema sorted after them; without columns a record stays alphabetical. A `set` touches only that record's file — git history and diffs are per record. Table, key, and field names are filename-safe slugs (letters, digits, `_`, `-`; `index` is a reserved table/key name); field values are arbitrary text.
 
 ## Usage
 
