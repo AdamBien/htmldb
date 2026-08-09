@@ -63,6 +63,12 @@ htmldb users rm joe twitter                 # remove one field
 htmldb users rm joe                         # remove the record
 htmldb users keys                           # all keys, sorted
 htmldb users list                           # key<TAB>field<TAB>value lines
+
+# search: case-insensitive substring, printed as key<TAB>label
+htmldb users find airhacks                  # any field value, or the key
+htmldb users find blog=adambien             # restrict the match to one field
+htmldb users find blog=                     # records that have a blog at all
+htmldb users find airhacks | cut -f1        # bare keys
 htmldb tables                               # → config, users
 ```
 

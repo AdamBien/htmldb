@@ -8,7 +8,7 @@ static final String PROPERTIES_FILE = "app.properties";
 static final String TOOL = "htmldb";
 
 String name = MethodHandles.lookup().lookupClass().getName();
-String version = "2026-08-09.3";
+String version = "2026-08-09.4";
 Path dbDir = Path.of(".");
 
 void main(String... args) throws Exception {
@@ -51,6 +51,7 @@ void dispatch(String... args) throws Exception {
         case "rm" -> rm(table, args);
         case "keys" -> printLines(keys(table));
         case "list" -> printLines(listing(table));
+        case "find" -> find(table, args);
         case "columns" -> columns(table, args);
         default -> fail("unknown command: " + args[1]);
     }
@@ -202,6 +203,43 @@ List<String> listing(String table) throws Exception {
     return lines;
 }
 
+/// Filters a table by a case-insensitive substring, printing key<TAB>label so a
+/// hit says what it is rather than only when it was written. `field=text`
+/// restricts the match to one present field, while a bare term also matches the
+/// key — a date fragment finds every record added that day.
+void find(String table, String... args) throws Exception {
+    if (args.length != 3) {
+        fail("usage: " + commandPrefix(table) + " find <text> | <field>=<text>");
+    }
+    var term = args[2];
+    var separator = term.indexOf('=');
+    var field = separator < 1 ? null : term.substring(0, separator);
+    var text = (separator < 1 ? term : term.substring(separator + 1)).toLowerCase();
+    var columns = columnNames(table);
+    var lines = new ArrayList<String>();
+    for (var key : keys(table)) {
+        var record = fields(recordPage(table, key));
+        if (matches(record, key, field, text)) {
+            lines.add(key + "\t" + label(columns, record, key));
+        }
+    }
+    if (lines.isEmpty()) {
+        fail("no match: " + term);
+    }
+    printLines(lines);
+}
+
+/// A field-scoped term matches only that field, and only where the record
+/// actually carries it — so a bare `field=` selects the records having it.
+boolean matches(SortedMap<String, String> record, String key, String field, String text) {
+    if (field != null) {
+        var value = record.get(field);
+        return value != null && value.toLowerCase().contains(text);
+    }
+    return key.toLowerCase().contains(text)
+            || record.values().stream().anyMatch(value -> value.toLowerCase().contains(text));
+}
+
 List<String> recordLines(String prefix, Map<String, String> record) {
     return record.entrySet().stream()
             .map(entry -> prefix + entry.getKey() + "\t" + entry.getValue())
@@ -330,10 +368,16 @@ void updateTableIndex(String table, List<String> columns) throws Exception {
 /// leading field is what the record is about. Falls back to the key when no
 /// columns are declared or the record has no value for the first one.
 String label(String table, String key, List<String> columns) throws Exception {
+    return label(columns, fields(recordPage(table, key)), key);
+}
+
+/// Labels an already loaded record, so callers holding its fields — [#find] —
+/// do not parse the page a second time.
+String label(List<String> columns, SortedMap<String, String> record, String key) {
     if (columns.isEmpty()) {
         return key;
     }
-    var value = fields(recordPage(table, key)).getOrDefault(columns.getFirst(), "");
+    var value = record.getOrDefault(columns.getFirst(), "");
     return value.isBlank() ? key : value;
 }
 
@@ -479,6 +523,8 @@ void help() {
               <table> rm <key> <field>              remove one field
               <table> keys                          print all keys, sorted
               <table> list                          print key<TAB>field<TAB>value lines
+              <table> find <text>                   print key<TAB>label for matching records
+              <table> find <field>=<text>           restrict the match to one field
               tables                                list all tables
               -help                                 show this help
               -version                              show version
