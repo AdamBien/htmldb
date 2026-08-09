@@ -6,9 +6,12 @@ static final String INDEX_PAGE = "index.html";
 static final String PAGE_SUFFIX = ".html";
 static final String PROPERTIES_FILE = "app.properties";
 static final String TOOL = "htmldb";
+static final String KEY_COLUMN = "key";
+static final String COLUMN_GAP = "  ";
+static final int MAX_CELL = 40;
 
 String name = MethodHandles.lookup().lookupClass().getName();
-String version = "2026-08-09.4";
+String version = "2026-08-09.5";
 Path dbDir = Path.of(".");
 
 void main(String... args) throws Exception {
@@ -134,7 +137,7 @@ void get(String table, String... args) throws Exception {
         }
         IO.println(value);
     } else {
-        printLines(recordLines("", ordered(columnNames(table), record)));
+        printLines(recordLines(ordered(columnNames(table), record)));
     }
 }
 
@@ -194,13 +197,71 @@ List<String> columnNames(String table) throws Exception {
             .toList();
 }
 
+/// Renders the whole table as one row per record — a record spread over one
+/// line per field is unreadable past a handful of records. Aligned for reading
+/// rather than piping; `keys`, `get` and `find` stay tab separated.
 List<String> listing(String table) throws Exception {
-    var columns = columnNames(table);
-    var lines = new ArrayList<String>();
+    var records = new LinkedHashMap<String, SortedMap<String, String>>();
     for (var key : keys(table)) {
-        lines.addAll(recordLines(key + "\t", ordered(columns, fields(recordPage(table, key)))));
+        records.put(key, fields(recordPage(table, key)));
+    }
+    if (records.isEmpty()) {
+        return List.of();
+    }
+    var headers = headers(columnNames(table), records.values());
+    var rows = new ArrayList<List<String>>();
+    rows.add(headers);
+    records.forEach((key, record) -> rows.add(row(key, headers, record)));
+    return aligned(rows);
+}
+
+/// Table columns: the key, then the declared columns, then any remaining field
+/// names the records carry, sorted. Declared columns appear even when empty —
+/// the schema, not the data, defines the table's shape.
+List<String> headers(List<String> columns, Collection<SortedMap<String, String>> records) {
+    var headers = new LinkedHashSet<String>();
+    headers.add(KEY_COLUMN);
+    headers.addAll(columns);
+    records.stream().flatMap(record -> record.keySet().stream()).sorted().forEach(headers::add);
+    return List.copyOf(headers);
+}
+
+List<String> row(String key, List<String> headers, SortedMap<String, String> record) {
+    return headers.stream()
+            .map(header -> header.equals(KEY_COLUMN) ? key : cell(record.getOrDefault(header, "")))
+            .toList();
+}
+
+/// Collapses a value onto one line and cuts it at [#MAX_CELL], since a
+/// multi-line or long body would otherwise wrap and destroy the layout. The
+/// full value stays available through `get`; keys are never cut, so they remain
+/// usable as `get` arguments.
+String cell(String value) {
+    var single = value.replaceAll("\\s+", " ").strip();
+    return single.length() <= MAX_CELL ? single : single.substring(0, MAX_CELL - 1) + "…";
+}
+
+/// Pads every cell to its column's widest entry; the trailing column is left
+/// unpadded so rows carry no trailing whitespace.
+List<String> aligned(List<List<String>> rows) {
+    var widths = new ArrayList<Integer>();
+    for (var column = 0; column < rows.getFirst().size(); column++) {
+        var index = column;
+        widths.add(rows.stream().mapToInt(row -> row.get(index).length()).max().orElse(0));
+    }
+    var lines = new ArrayList<String>();
+    for (var row : rows) {
+        var line = new StringBuilder();
+        for (var column = 0; column < row.size() - 1; column++) {
+            line.append(pad(row.get(column), widths.get(column))).append(COLUMN_GAP);
+        }
+        lines.add((line + row.getLast()).stripTrailing());
     }
     return lines;
+}
+
+String pad(String cell, int width) {
+    return cell + " ".repeat(width - cell.length());
 }
 
 /// Filters a table by a case-insensitive substring, printing key<TAB>label so a
@@ -240,9 +301,9 @@ boolean matches(SortedMap<String, String> record, String key, String field, Stri
             || record.values().stream().anyMatch(value -> value.toLowerCase().contains(text));
 }
 
-List<String> recordLines(String prefix, Map<String, String> record) {
+List<String> recordLines(Map<String, String> record) {
     return record.entrySet().stream()
-            .map(entry -> prefix + entry.getKey() + "\t" + entry.getValue())
+            .map(entry -> entry.getKey() + "\t" + entry.getValue())
             .toList();
 }
 
@@ -522,7 +583,7 @@ void help() {
               <table> rm <key>                      remove a record
               <table> rm <key> <field>              remove one field
               <table> keys                          print all keys, sorted
-              <table> list                          print key<TAB>field<TAB>value lines
+              <table> list                          print all records as an aligned table
               <table> find <text>                   print key<TAB>label for matching records
               <table> find <field>=<text>           restrict the match to one field
               tables                                list all tables

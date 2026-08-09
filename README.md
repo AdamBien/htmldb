@@ -62,17 +62,18 @@ echo "Java Champion" | htmldb users set joe bio   # field value from stdin
 htmldb users rm joe twitter                 # remove one field
 htmldb users rm joe                         # remove the record
 htmldb users keys                           # all keys, sorted
-htmldb users list                           # key<TAB>field<TAB>value lines
+htmldb users list                           # all records as an aligned table
 
 # search: case-insensitive substring, printed as key<TAB>label
 htmldb users find airhacks                  # any field value, or the key
 htmldb users find blog=adambien             # restrict the match to one field
 htmldb users find blog=                     # records that have a blog at all
 htmldb users find airhacks | cut -f1        # bare keys
+
 htmldb tables                               # → config, users
 ```
 
-Data goes to stdout, diagnostics and the version banner to stderr — pipe-friendly. Exit code 0 on success, 1 on missing keys, missing tables, or usage errors.
+Data goes to stdout, diagnostics and the version banner to stderr — pipe-friendly. `keys`, `get` and `find` emit tab separated values for scripting; `list` is the one command formatted for reading, padding its columns and cutting long values, so pipe `find` rather than `list`. Exit code 0 on success, 1 on missing keys, missing tables, no search match, or usage errors.
 
 ## Dedicated CLIs
 
