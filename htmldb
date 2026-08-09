@@ -8,7 +8,7 @@ static final String PROPERTIES_FILE = "app.properties";
 static final String TOOL = "htmldb";
 
 String name = MethodHandles.lookup().lookupClass().getName();
-String version = "2026-08-04.1";
+String version = "2026-08-09.2";
 Path dbDir = Path.of(".");
 
 void main(String... args) throws Exception {
@@ -300,11 +300,24 @@ void updateTableIndex(String table) throws Exception {
 }
 
 void updateTableIndex(String table, List<String> columns) throws Exception {
-    var links = keys(table).stream()
-            .map(key -> link(key + PAGE_SUFFIX, key))
-            .collect(Collectors.joining("\n"));
-    var content = columnsSection(columns) + navigation(links);
+    var links = new ArrayList<String>();
+    for (var key : keys(table)) {
+        links.add(link(key + PAGE_SUFFIX, label(table, key, columns)));
+    }
+    var content = columnsSection(columns) + navigation(String.join("\n", links));
     atomicWrite(dbDir.resolve(table).resolve(INDEX_PAGE), page(table, breadcrumb("../" + INDEX_PAGE, name), content));
+}
+
+/// Labels an index entry with the record's first column value: a generated
+/// timestamp key identifies a record but says nothing about it, while the
+/// leading field is what the record is about. Falls back to the key when no
+/// columns are declared or the record has no value for the first one.
+String label(String table, String key, List<String> columns) throws Exception {
+    if (columns.isEmpty()) {
+        return key;
+    }
+    var value = fields(recordPage(table, key)).getOrDefault(columns.getFirst(), "");
+    return value.isBlank() ? key : value;
 }
 
 String columnsSection(List<String> columns) {
@@ -319,7 +332,7 @@ void updateRootIndex() throws Exception {
 }
 
 String link(String href, String label) {
-    return "      <li><a href=\"%s\">%s</a></li>".formatted(href, label);
+    return "      <li><a href=\"%s\">%s</a></li>".formatted(href, escape(label));
 }
 
 String navigation(String links) {
@@ -371,7 +384,7 @@ String page(String title, String breadcrumb, String content) {
                 body { font-family: system-ui, sans-serif; line-height: 1.6; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
                 dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1.5rem; }
                 dt { font-weight: 600; }
-                dd { margin: 0; }
+                dd { margin: 0; white-space: pre-wrap; }
                 nav ul { list-style: none; padding: 0; }
                 footer { font-size: 0.8rem; opacity: 0.6; }
               </style>
