@@ -241,23 +241,19 @@ String cell(String value) {
     return single.length() <= MAX_CELL ? single : single.substring(0, MAX_CELL - 1) + "…";
 }
 
-/// Pads every cell to its column's widest entry; the trailing column is left
-/// unpadded so rows carry no trailing whitespace.
+/// Pads every cell to its column's widest entry, then strips the line end, so
+/// the trailing column needs no special case to avoid trailing whitespace.
 List<String> aligned(List<List<String>> rows) {
-    var widths = new ArrayList<Integer>();
-    for (var column = 0; column < rows.getFirst().size(); column++) {
-        var index = column;
-        widths.add(rows.stream().mapToInt(row -> row.get(index).length()).max().orElse(0));
-    }
-    var lines = new ArrayList<String>();
-    for (var row : rows) {
-        var line = new StringBuilder();
-        for (var column = 0; column < row.size() - 1; column++) {
-            line.append(pad(row.get(column), widths.get(column))).append(COLUMN_GAP);
-        }
-        lines.add((line + row.getLast()).stripTrailing());
-    }
-    return lines;
+    var widths = IntStream.range(0, rows.getFirst().size())
+            .map(column -> rows.stream().mapToInt(row -> row.get(column).length()).max().orElse(0))
+            .boxed()
+            .toList();
+    return rows.stream()
+            .map(row -> IntStream.range(0, row.size())
+                    .mapToObj(column -> pad(row.get(column), widths.get(column)))
+                    .collect(Collectors.joining(COLUMN_GAP))
+                    .stripTrailing())
+            .toList();
 }
 
 String pad(String cell, int width) {
