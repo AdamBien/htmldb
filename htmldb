@@ -209,21 +209,19 @@ List<String> listing(String table) throws Exception {
         return List.of();
     }
     var headers = headers(columnNames(table), records.values());
-    var rows = new ArrayList<List<String>>();
-    rows.add(headers);
-    records.forEach((key, record) -> rows.add(row(key, headers, record)));
-    return aligned(rows);
+    var body = records.entrySet().stream().map(entry -> row(entry.getKey(), headers, entry.getValue()));
+    return aligned(Stream.concat(Stream.of(headers), body).toList());
 }
 
 /// Table columns: the key, then the declared columns, then any remaining field
 /// names the records carry, sorted. Declared columns appear even when empty —
 /// the schema, not the data, defines the table's shape.
 List<String> headers(List<String> columns, Collection<SortedMap<String, String>> records) {
-    var headers = new LinkedHashSet<String>();
-    headers.add(KEY_COLUMN);
-    headers.addAll(columns);
-    records.stream().flatMap(record -> record.keySet().stream()).sorted().forEach(headers::add);
-    return List.copyOf(headers);
+    var extras = records.stream().flatMap(record -> record.keySet().stream()).sorted();
+    return Stream.of(Stream.of(KEY_COLUMN), columns.stream(), extras)
+            .flatMap(Function.identity())
+            .distinct()
+            .toList();
 }
 
 List<String> row(String key, List<String> headers, SortedMap<String, String> record) {
@@ -308,15 +306,10 @@ List<String> recordLines(Map<String, String> record) {
 /// outside the schema keep their alphabetical order and follow the declared
 /// ones; without declared columns the record stays alphabetical.
 SequencedMap<String, String> ordered(List<String> columns, SortedMap<String, String> record) {
-    var arranged = new LinkedHashMap<String, String>();
-    for (var column : columns) {
-        var value = record.get(column);
-        if (value != null) {
-            arranged.put(column, value);
-        }
-    }
-    record.forEach(arranged::putIfAbsent);
-    return arranged;
+    var declaredFirst = Stream.concat(columns.stream(), record.keySet().stream()).distinct();
+    return declaredFirst
+            .filter(record::containsKey)
+            .collect(Collectors.toMap(Function.identity(), record::get, (first, _) -> first, LinkedHashMap::new));
 }
 
 void printLines(List<String> lines) {
