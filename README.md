@@ -64,16 +64,22 @@ htmldb users rm joe                         # remove the record
 htmldb users keys                           # all keys, sorted
 htmldb users list                           # all records as an aligned table
 
-# search: case-insensitive substring, printed as key<TAB>label
+# filter: case-insensitive substring, printed as key<TAB>label
 htmldb users find airhacks                  # any field value, or the key
 htmldb users find blog=adambien             # restrict the match to one field
 htmldb users find blog=                     # records that have a blog at all
+htmldb users find blog= twitter=airhacks    # several terms: all have to match
 htmldb users find airhacks | cut -f1        # bare keys
+
+htmldb users list blog=adambien             # same terms, as a readable table
+htmldb notes list category=todo             # the everyday one
 
 htmldb tables                               # → config, users
 ```
 
-Data goes to stdout, diagnostics and the version banner to stderr — pipe-friendly. `keys`, `get` and `find` emit tab separated values for scripting; `list` is the one command formatted for reading, padding its columns and cutting long values, so pipe `find` rather than `list`. Exit code 0 on success, 1 on missing keys, missing tables, no search match, or usage errors.
+`find` and `list` take the same filter terms and differ only in output: `find` prints key<TAB>label to pipe, `list` renders the matching records as a table to read. A term is `<text>` (matching any field value or the key), `<field>=<text>` (matching that one field) or `<field>=` (records carrying the field at all); several terms narrow each other, so `category=todo priority=high` matches records satisfying both. A filter that matches nothing exits 1 — an unfiltered `list` of an empty table does not, since nothing was searched for.
+
+Data goes to stdout, diagnostics and the version banner to stderr — pipe-friendly. `keys`, `get` and `find` emit tab separated values for scripting; `list` is the one command formatted for reading, padding its columns and cutting long values, so pipe `find` rather than `list`. Exit code 0 on success, 1 on missing keys, missing tables, no match, or usage errors.
 
 ## Dedicated CLIs
 
