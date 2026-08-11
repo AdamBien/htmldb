@@ -16,20 +16,20 @@ Each table is a folder, each record is its own XHTML page holding its fields as 
 │   └── app.html
 └── users/
     ├── index.html
-    ├── jane.html
-    └── joe.html          # <h1>joe</h1> + <dl> with email, blog, ...
+    ├── duke.html         # <h1>duke</h1> + <dl> with email, blog, ...
+    └── jane.html
 ```
 
 A record page:
 
 ```xml
 <main>
-  <h1>joe</h1>
+  <h1>duke</h1>
   <dl>
     <dt>blog</dt>
-    <dd>adambien.blog</dd>
+    <dd>duke.blog</dd>
     <dt>email</dt>
-    <dd>joe@airhacks.com</dd>
+    <dd>duke@airhacks.com</dd>
   </dl>
   <footer>
     <p>updated <time datetime="2026-08-03T15:31:07Z">2026-08-03T15:31:07Z</time></p>
@@ -39,13 +39,14 @@ A record page:
 
 In a table index each record is linked by its **first column's value**, falling back to the key when no columns are defined or the field is empty. A generated timestamp key identifies a record but says nothing about it, so `talks columns title,description` makes the index read as a list of titles.
 
-Every page is valid HTML5 *and* well-formed XML. Fields follow the declared column order — in the page, in `get` and in `list` — with any fields outside the schema sorted after them; without columns a record stays alphabetical. A `set` touches only that record's file — git history and diffs are per record. Table, key, and field names are filename-safe slugs (letters, digits, `_`, `-`; `index` is a reserved table/key name); field values are arbitrary text.
+Every page is valid HTML5 *and* well-formed XML. Fields follow the declared column order — in the page, in `get` and in `list` — with any fields outside the schema sorted after them; without columns a record stays alphabetical. A `set` touches only that record's file — git history and diffs are per record. `field=value` replaces a value, `field+=value` appends to it, joining with a newline so a field grows into a log; on a missing or empty field both are the same write. Table, key, and field names are filename-safe slugs (letters, digits, `_`, `-`; `index` is a reserved table/key name); field values are arbitrary text.
 
 ## Usage
 
 ```bash
-htmldb users set joe email=joe@airhacks.com blog=adambien.blog   # creates users/joe.html
-htmldb users set adam twitter=@AdamBien      # merges into the existing record
+htmldb users set duke email=duke@airhacks.com blog=duke.blog   # creates users/duke.html
+htmldb users set duke twitter=@duke          # merges into the existing record
+htmldb users set duke bio+="Java Champion"   # += appends instead of replacing
 
 # fast entry: define the column order once, then set values positionally
 htmldb users columns email,blog,twitter
@@ -56,22 +57,23 @@ htmldb users columns                        # print the column order
 htmldb talks columns title,description
 htmldb talks add "Java 25" "What's new in the source launcher"   # → talks/2026-08-04-142122.html
 
-htmldb users get joe                        # all fields as field<TAB>value lines
-htmldb users get joe email                  # → joe@airhacks.com
-echo "Java Champion" | htmldb users set joe bio   # field value from stdin
-htmldb users rm joe twitter                 # remove one field
-htmldb users rm joe                         # remove the record
+htmldb users get duke                       # all fields as field<TAB>value lines
+htmldb users get duke email                 # → duke@airhacks.com
+echo "Java Champion" | htmldb users set duke bio  # field value from stdin
+cat notes.txt | htmldb notes set n1 body+         # trailing + appends the stdin value
+htmldb users rm duke twitter                # remove one field
+htmldb users rm duke                        # remove the record
 htmldb users keys                           # all keys, sorted
 htmldb users list                           # all records as an aligned table
 
 # filter: case-insensitive substring, printed as key<TAB>label
 htmldb users find airhacks                  # any field value, or the key
-htmldb users find blog=adambien             # restrict the match to one field
+htmldb users find blog=duke                 # restrict the match to one field
 htmldb users find blog=                     # records that have a blog at all
 htmldb users find blog= twitter=airhacks    # several terms: all have to match
 htmldb users find airhacks | cut -f1        # bare keys
 
-htmldb users list blog=adambien             # same terms, as a readable table
+htmldb users list blog=duke                 # same terms, as a readable table
 htmldb notes list category=todo             # the everyday one
 
 htmldb tables                               # → config, users

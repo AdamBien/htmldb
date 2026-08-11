@@ -11,7 +11,7 @@ static final String COLUMN_GAP = "  ";
 static final int MAX_CELL = 40;
 
 String name = MethodHandles.lookup().lookupClass().getName();
-String version = "2026-08-10.1";
+String version = "2026-08-11.1";
 Path dbDir = Path.of(".");
 
 void main(String... args) throws Exception {
@@ -63,10 +63,11 @@ void dispatch(String... args) throws Exception {
 /// Merges fields into an existing record (creating it if absent). Three input
 /// shapes, tried in order: a lone comma-bearing argument is positional CSV by
 /// column order, a lone bare name reads its value from stdin, otherwise each
-/// argument is a `field=value` pair.
+/// argument is a `field=value` pair. A `+` before the `=` — or after a lone
+/// name — appends instead of replacing.
 void set(String table, String... args) throws Exception {
     if (args.length < 4) {
-        fail("usage: " + name + " <table> set <key> <field>=<value>... | <field> (value from stdin)");
+        fail("usage: " + name + " <table> set <key> <field>[+]=<value>... | <field>[+] (value from stdin), + appends");
     }
     var key = args[2];
     validate(key, "key");
@@ -75,22 +76,32 @@ void set(String table, String... args) throws Exception {
     if (args.length == 4 && !args[3].contains("=") && args[3].contains(",")) {
         record.putAll(positionalFields(table, args[3]));
     } else if (args.length == 4 && !args[3].contains("=")) {
-        validate(args[3], "field");
-        record.put(args[3], new String(System.in.readAllBytes(), StandardCharsets.UTF_8).strip());
+        var appending = args[3].endsWith("+");
+        var field = appending ? args[3].substring(0, args[3].length() - 1) : args[3];
+        assign(record, field, new String(System.in.readAllBytes(), StandardCharsets.UTF_8).strip(), appending);
     } else {
         for (var index = 3; index < args.length; index++) {
             var assignment = args[index];
             var separator = assignment.indexOf('=');
             if (separator < 1) {
-                fail("expected <field>=<value>, got: " + assignment);
+                fail("expected <field>=<value> or <field>+=<value>, got: " + assignment);
             }
-            var field = assignment.substring(0, separator);
-            validate(field, "field");
-            record.put(field, assignment.substring(separator + 1));
+            var appending = assignment.charAt(separator - 1) == '+';
+            var field = assignment.substring(0, appending ? separator - 1 : separator);
+            assign(record, field, assignment.substring(separator + 1), appending);
         }
     }
     saveRecord(table, key, record);
     Log.success("stored: " + table + "/" + key + PAGE_SUFFIX);
+}
+
+/// Replaces a field's value, or appends to it. Appending joins with a newline
+/// so a field grows into a readable log rather than one run-on line; a missing
+/// or blank field takes the value as is, making `+=` safe as the first write.
+void assign(SortedMap<String, String> record, String field, String value, boolean appending) {
+    validate(field, "field");
+    var existing = record.get(field);
+    record.put(field, !appending || existing == null || existing.isBlank() ? value : existing + "\n" + value);
 }
 
 /// Appends a record under a generated timestamp key. Each value is a separate
@@ -585,7 +596,9 @@ void help() {
 
             Commands:
               <table> set <key> <field>=<value>...  store fields (merged into the record)
+              <table> set <key> <field>+=<value>... append to fields (newline separated)
               <table> set <key> <field>             store one field, value from stdin
+              <table> set <key> <field>+            append one field, value from stdin
               <table> set <key> <v1,v2,...>         store values positionally by table columns
               <table> add <value>...                add a record with a generated timestamp key
               <table> columns <name,name,...>       define column order for positional set and add
