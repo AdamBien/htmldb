@@ -11,7 +11,7 @@ static final String COLUMN_GAP = "  ";
 static final int MAX_CELL = 40;
 
 String name = MethodHandles.lookup().lookupClass().getName();
-String version = "2026-08-11.1";
+String version = "2026-08-17.1";
 Path dbDir = Path.of(".");
 
 void main(String... args) throws Exception {
@@ -153,13 +153,20 @@ void get(String table, String... args) throws Exception {
 }
 
 /// Defines (or, without arguments, prints) the positional column order used by
-/// `set` and `add`, persisting it into the table's generated `index.html`.
+/// `set` and `add`, persisting it into the table's generated `index.html`. All
+/// arguments past the command count as one list, since a blank after a comma
+/// makes the shell deliver the names as separate arguments.
 void columns(String table, String... args) throws Exception {
     if (args.length < 3) {
         printLines(columnNames(table).isEmpty() ? List.of() : List.of(String.join(",", columnNames(table))));
         return;
     }
-    var columns = Stream.of(args[2].split(",")).map(String::strip).toList();
+    var columns = Stream.of(args)
+            .skip(2)
+            .flatMap(argument -> Stream.of(argument.split(",")))
+            .map(String::strip)
+            .filter(column -> !column.isEmpty())
+            .toList();
     for (var column : columns) {
         validate(column, "field");
     }
