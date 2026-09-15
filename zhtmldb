@@ -5,7 +5,7 @@ import module java.xml;
 /// CLI facade: argument parsing, command dispatch, usage hints and status output.
 interface Boundary {
 
-    String TOOL = "htmldb";
+    String TOOL = "zhtmldb";
     String NAME = MethodHandles.lookup().lookupClass().getEnclosingClass().getName();
     String VERSION = "2026-09-15.1";
 

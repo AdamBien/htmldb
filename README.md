@@ -1,4 +1,4 @@
-# htmldb
+# zhtmldb
 
 **The storage format is also the UI.**
 
@@ -44,39 +44,39 @@ Every page is valid HTML5 *and* well-formed XML. Fields follow the declared colu
 ## Usage
 
 ```bash
-htmldb users set duke email=duke@airhacks.com blog=duke.blog   # creates users/duke.html
-htmldb users set duke twitter=@duke          # merges into the existing record
-htmldb users set duke bio+="Java Champion"   # += appends instead of replacing
+zhtmldb users set duke email=duke@airhacks.com blog=duke.blog   # creates users/duke.html
+zhtmldb users set duke twitter=@duke          # merges into the existing record
+zhtmldb users set duke bio+="Java Champion"   # += appends instead of replacing
 
 # fast entry: define the column order once, then set values positionally
-htmldb users columns email,blog,twitter
-htmldb users set jane "jane@airhacks.com,janes.blog,@jane"
-htmldb users columns                        # print the column order
+zhtmldb users columns email,blog,twitter
+zhtmldb users set jane "jane@airhacks.com,janes.blog,@jane"
+zhtmldb users columns                        # print the column order
 
 # note taking: add stores values positionally under a generated timestamp key
-htmldb talks columns title,description
-htmldb talks add "Java 25" "What's new in the source launcher"   # → talks/2026-08-04-142122.html
+zhtmldb talks columns title,description
+zhtmldb talks add "Java 25" "What's new in the source launcher"   # → talks/2026-08-04-142122.html
 
-htmldb users get duke                       # all fields as field<TAB>value lines
-htmldb users get duke email                 # → duke@airhacks.com
-echo "Java Champion" | htmldb users set duke bio  # field value from stdin
-cat notes.txt | htmldb notes set n1 body+         # trailing + appends the stdin value
-htmldb users rm duke twitter                # remove one field
-htmldb users rm duke                        # remove the record
-htmldb users keys                           # all keys, sorted
-htmldb users list                           # all records as an aligned table
+zhtmldb users get duke                       # all fields as field<TAB>value lines
+zhtmldb users get duke email                 # → duke@airhacks.com
+echo "Java Champion" | zhtmldb users set duke bio  # field value from stdin
+cat notes.txt | zhtmldb notes set n1 body+         # trailing + appends the stdin value
+zhtmldb users rm duke twitter                # remove one field
+zhtmldb users rm duke                        # remove the record
+zhtmldb users keys                           # all keys, sorted
+zhtmldb users list                           # all records as an aligned table
 
 # filter: case-insensitive substring, printed as key<TAB>label
-htmldb users find airhacks                  # any field value, or the key
-htmldb users find blog=duke                 # restrict the match to one field
-htmldb users find blog=                     # records that have a blog at all
-htmldb users find blog= twitter=airhacks    # several terms: all have to match
-htmldb users find airhacks | cut -f1        # bare keys
+zhtmldb users find airhacks                  # any field value, or the key
+zhtmldb users find blog=duke                 # restrict the match to one field
+zhtmldb users find blog=                     # records that have a blog at all
+zhtmldb users find blog= twitter=airhacks    # several terms: all have to match
+zhtmldb users find airhacks | cut -f1        # bare keys
 
-htmldb users list blog=duke                 # same terms, as a readable table
-htmldb notes list category=todo             # the everyday one
+zhtmldb users list blog=duke                 # same terms, as a readable table
+zhtmldb notes list category=todo             # the everyday one
 
-htmldb tables                               # → config, users
+zhtmldb tables                               # → config, users
 ```
 
 `find` and `list` take the same filter terms and differ only in output: `find` prints key<TAB>label to pipe, `list` renders the matching records as a table to read. A term is `<text>` (matching any field value or the key), `<field>=<text>` (matching that one field) or `<field>=` (records carrying the field at all); several terms narrow each other, so `category=todo priority=high` matches records satisfying both. A filter that matches nothing exits 1 — an unfiltered `list` of an empty table does not, since nothing was searched for.
@@ -88,7 +88,7 @@ Data goes to stdout, diagnostics and the version banner to stderr — pipe-frien
 A symlink named after a table becomes a preconfigured tool (busybox-style) — the script derives its identity from the invoked file name and prepends it as the table:
 
 ```bash
-ln -s /usr/local/bin/htmldb /usr/local/bin/talks
+ln -s /usr/local/bin/zhtmldb /usr/local/bin/talks
 talks columns title,description
 talks add "Java 25" "What's new in the source launcher"
 ```
@@ -99,7 +99,7 @@ Each symlink also reads its own global configuration (`~/.talks/app.properties`)
 
 The database root defaults to the current directory. Override with the `db.dir` property ([zcfg](https://github.com/AdamBien/zcfg) precedence):
 
-1. `~/.htmldb/app.properties`
+1. `~/.zhtmldb/app.properties`
 2. `./app.properties`
 3. `-Ddb.dir=<path>` system property
 
@@ -112,15 +112,15 @@ db.dir=/path/to/database
 Requires Java 25 or later.
 
 ```bash
-curl -O https://raw.githubusercontent.com/AdamBien/htmldb/main/htmldb
-chmod +x htmldb
-./htmldb -help
+curl -O https://raw.githubusercontent.com/AdamBien/zhtmldb/main/zhtmldb
+chmod +x zhtmldb
+./zhtmldb -help
 ```
 
-Copy `htmldb` to a directory in your PATH for system-wide use:
+Copy `zhtmldb` to a directory in your PATH for system-wide use:
 
 ```bash
-sudo cp htmldb /usr/local/bin/
+sudo cp zhtmldb /usr/local/bin/
 # or symlink for development
-sudo ln -s $(pwd)/htmldb /usr/local/bin/htmldb
+sudo ln -s $(pwd)/zhtmldb /usr/local/bin/zhtmldb
 ```
