@@ -2,693 +2,734 @@
 
 import module java.xml;
 
-static final String INDEX_PAGE = "index.html";
-static final String PAGE_SUFFIX = ".html";
-static final String PROPERTIES_FILE = "app.properties";
-static final String TOOL = "htmldb";
-static final String KEY_COLUMN = "key";
-static final String COLUMN_GAP = "  ";
-static final int MAX_CELL = 40;
+/// CLI facade: argument parsing, command dispatch, usage hints and status output.
+interface Boundary {
 
-String name = MethodHandles.lookup().lookupClass().getName();
-String version = "2026-08-17.1";
-Path dbDir = Path.of(".");
+    String TOOL = "htmldb";
+    String NAME = MethodHandles.lookup().lookupClass().getEnclosingClass().getName();
+    String VERSION = "2026-09-14.1";
 
-void main(String... args) throws Exception {
-    Log.system(name + " " + version);
-    dbDir = Path.of(loadConfiguration().getProperty("db.dir", "."));
-    var arguments = tableQualified(args);
-    if (arguments.length == 0) {
-        help();
+    static void manageDatabase(String... args) throws Exception {
+        Log.system(NAME + " " + VERSION);
+        var arguments = tableQualified(args);
+        if (arguments.length == 0) {
+            help();
+            System.exit(1);
+        }
+        switch (arguments[0]) {
+            case "-help" -> help();
+            case "-version" -> {}
+            case "tables" -> printLines(Control.tableNames());
+            default -> dispatch(arguments);
+        }
+    }
+
+    /// Turns a symlink persona into a dedicated CLI: a script invoked under a
+    /// table's name (busybox-style) has that name as its implicit class, so the
+    /// table is prepended to the arguments. The real [#TOOL] name and any leading
+    /// flag bypass this.
+    static String[] tableQualified(String... args) {
+        if (NAME.equals(TOOL) || args.length == 0 || args[0].startsWith("-")) {
+            return args;
+        }
+        return Stream.concat(Stream.of(NAME), Stream.of(args)).toArray(String[]::new);
+    }
+
+    static void dispatch(String... args) throws Exception {
+        var table = args[0];
+        Control.validate(table, "table");
+        if (args.length < 2) {
+            fail("missing command, see: " + NAME + " -help");
+        }
+        switch (args[1]) {
+            case "set" -> set(table, args);
+            case "add" -> add(table, args);
+            case "get" -> get(table, args);
+            case "rm" -> rm(table, args);
+            case "keys" -> printLines(Control.keys(table));
+            case "list" -> printLines(Control.listing(table, terms(args)));
+            case "find" -> find(table, args);
+            case "columns" -> columns(table, args);
+            default -> fail("unknown command: " + args[1]);
+        }
+    }
+
+    /// Merges fields into an existing record (creating it if absent). Three input
+    /// shapes, tried in order: a lone comma-bearing argument is positional CSV by
+    /// column order, a lone bare name reads its value from stdin, otherwise each
+    /// argument is a `field=value` pair. A `+` before the `=` — or after a lone
+    /// name — appends instead of replacing.
+    static void set(String table, String... args) throws Exception {
+        if (args.length < 4) {
+            fail("usage: " + NAME + " <table> set <key> <field>[+]=<value>... | <field>[+] (value from stdin), + appends");
+        }
+        var key = args[2];
+        Control.validate(key, "key");
+        var record = Control.record(table, key);
+        if (args.length == 4 && !args[3].contains("=") && args[3].contains(",")) {
+            record.putAll(Control.positionalFields(table, args[3]));
+        } else if (args.length == 4 && !args[3].contains("=")) {
+            var appending = args[3].endsWith("+");
+            var field = appending ? args[3].substring(0, args[3].length() - 1) : args[3];
+            Control.assign(record, field, new String(System.in.readAllBytes(), StandardCharsets.UTF_8).strip(), appending);
+        } else {
+            for (var index = 3; index < args.length; index++) {
+                var assignment = args[index];
+                var separator = assignment.indexOf('=');
+                if (separator < 1) {
+                    fail("expected <field>=<value> or <field>+=<value>, got: " + assignment);
+                }
+                var appending = assignment.charAt(separator - 1) == '+';
+                var field = assignment.substring(0, appending ? separator - 1 : separator);
+                Control.assign(record, field, assignment.substring(separator + 1), appending);
+            }
+        }
+        Control.saveRecord(table, key, record);
+        Log.success("stored: " + table + "/" + key + Control.PAGE_SUFFIX);
+    }
+
+    /// Appends a record under a generated timestamp key. Each value is a separate
+    /// shell argument (not CSV), so field values may themselves contain commas.
+    static void add(String table, String... args) throws Exception {
+        if (args.length < 3) {
+            fail("usage: " + commandPrefix(table) + " add <value>...");
+        }
+        var key = Control.generatedKey(table);
+        Control.saveRecord(table, key, Control.positionalFields(table, List.of(args).subList(2, args.length)));
+        Log.success("added: " + table + "/" + key + Control.PAGE_SUFFIX);
+    }
+
+    static void get(String table, String... args) throws Exception {
+        if (args.length < 3) {
+            fail("usage: " + NAME + " <table> get <key> [field]");
+        }
+        var record = Control.existingRecord(table, args[2]);
+        if (args.length > 3) {
+            var value = record.get(args[3]);
+            if (value == null) {
+                fail("no such field: " + args[3]);
+            }
+            IO.println(value);
+        } else {
+            printLines(Control.recordLines(Control.ordered(Control.columnNames(table), record)));
+        }
+    }
+
+    static void rm(String table, String... args) throws Exception {
+        if (args.length < 3) {
+            fail("usage: " + NAME + " <table> rm <key> [field]");
+        }
+        var key = args[2];
+        if (args.length > 3) {
+            var record = Control.existingRecord(table, key);
+            if (record.remove(args[3]) == null) {
+                fail("no such field: " + args[3]);
+            }
+            Control.saveRecord(table, key, record);
+            Log.success("removed: " + args[3] + " from " + table + "/" + key + Control.PAGE_SUFFIX);
+        } else {
+            Control.deleteRecord(table, key);
+            Log.success("removed: " + table + "/" + key + Control.PAGE_SUFFIX);
+        }
+    }
+
+    /// Filters a table, printing key<TAB>label so a hit says what it is rather than
+    /// only when it was written. Same terms as `list`, different output: `find` is
+    /// the pipeable one.
+    static void find(String table, String... args) throws Exception {
+        if (args.length < 3) {
+            fail("usage: " + commandPrefix(table) + " find <text> | <field>=<text> ...");
+        }
+        var columns = Control.columnNames(table);
+        printLines(Control.matching(table, terms(args)).entrySet().stream()
+                .map(entry -> entry.getKey() + "\t" + Control.label(columns, entry.getValue(), entry.getKey()))
+                .toList());
+    }
+
+    /// Defines (or, without arguments, prints) the positional column order used by
+    /// `set` and `add`, persisting it into the table's generated `index.html`. All
+    /// arguments past the command count as one list, since a blank after a comma
+    /// makes the shell deliver the names as separate arguments.
+    static void columns(String table, String... args) throws Exception {
+        if (args.length < 3) {
+            printLines(Control.columnNames(table).isEmpty()
+                    ? List.of()
+                    : List.of(String.join(",", Control.columnNames(table))));
+            return;
+        }
+        var columns = Stream.of(args)
+                .skip(2)
+                .flatMap(argument -> Stream.of(argument.split(",")))
+                .map(String::strip)
+                .filter(column -> !column.isEmpty())
+                .toList();
+        for (var column : columns) {
+            Control.validate(column, "field");
+        }
+        Control.defineColumns(table, columns);
+        Log.success("columns for " + table + ": " + String.join(",", columns));
+    }
+
+    /// The filter terms of a command: everything past the command word.
+    static List<String> terms(String... args) {
+        return List.of(args).subList(2, args.length);
+    }
+
+    /// Renders the command prefix for usage hints so a symlink persona shows
+    /// `talks add …` rather than the doubled `talks talks add …`.
+    static String commandPrefix(String table) {
+        return NAME.equals(table) ? NAME : NAME + " " + table;
+    }
+
+    static void printLines(List<String> lines) {
+        if (!lines.isEmpty()) {
+            IO.println(String.join("\n", lines));
+        }
+    }
+
+    static void fail(String message) {
+        Log.error(message);
         System.exit(1);
     }
-    switch (arguments[0]) {
-        case "-help" -> help();
-        case "-version" -> {}
-        case "tables" -> printLines(tableNames());
-        default -> dispatch(arguments);
-    }
-}
 
-/// Turns a symlink persona into a dedicated CLI: a script invoked under a
-/// table's name (busybox-style) has that name as its implicit class, so the
-/// table is prepended to the arguments. The real [#TOOL] name and any leading
-/// flag bypass this.
-String[] tableQualified(String... args) {
-    if (name.equals(TOOL) || args.length == 0 || args[0].startsWith("-")) {
-        return args;
-    }
-    return Stream.concat(Stream.of(name), Stream.of(args)).toArray(String[]::new);
-}
+    static void help() {
+        Log.user("""
+                Usage: %s <table> <command> [arguments]
 
-void dispatch(String... args) throws Exception {
-    var table = args[0];
-    validate(table, "table");
-    if (args.length < 2) {
-        fail("missing command, see: " + name + " -help");
-    }
-    switch (args[1]) {
-        case "set" -> set(table, args);
-        case "add" -> add(table, args);
-        case "get" -> get(table, args);
-        case "rm" -> rm(table, args);
-        case "keys" -> printLines(keys(table));
-        case "list" -> printLines(listing(table, terms(args)));
-        case "find" -> find(table, args);
-        case "columns" -> columns(table, args);
-        default -> fail("unknown command: " + args[1]);
-    }
-}
+                Each record is its own XHTML page (<table>/<key>.html) holding a <dl> of fields.
 
-/// Merges fields into an existing record (creating it if absent). Three input
-/// shapes, tried in order: a lone comma-bearing argument is positional CSV by
-/// column order, a lone bare name reads its value from stdin, otherwise each
-/// argument is a `field=value` pair. A `+` before the `=` — or after a lone
-/// name — appends instead of replacing.
-void set(String table, String... args) throws Exception {
-    if (args.length < 4) {
-        fail("usage: " + name + " <table> set <key> <field>[+]=<value>... | <field>[+] (value from stdin), + appends");
+                Commands:
+                  <table> set <key> <field>=<value>...  store fields (merged into the record)
+                  <table> set <key> <field>+=<value>... append to fields (newline separated)
+                  <table> set <key> <field>             store one field, value from stdin
+                  <table> set <key> <field>+            append one field, value from stdin
+                  <table> set <key> <v1,v2,...>         store values positionally by table columns
+                  <table> add <value>...                add a record with a generated timestamp key
+                  <table> columns <name,name,...>       define column order for positional set and add
+                  <table> columns                       print the column order
+                  <table> get <key>                     print all fields as field<TAB>value lines
+                  <table> get <key> <field>             print one field value
+                  <table> rm <key>                      remove a record
+                  <table> rm <key> <field>              remove one field
+                  <table> keys                          print all keys, sorted
+                  <table> list [<term>...]              print the records as an aligned table
+                  <table> find <term>...                print key<TAB>label for matching records
+                  tables                                list all tables
+                  -help                                 show this help
+                  -version                              show version
+
+                A term filters case-insensitively: <text> matches any field or the key,
+                <field>=<text> only that field, <field>= the records having it at all.
+                Several terms narrow each other - every one of them has to match.
+
+                Table, key and field names: letters, digits, _ and - ('index' is a reserved table/key name)
+
+                A symlink named after a table becomes a dedicated CLI with its own configuration:
+                  ln -s %s talks && talks add "Java 25" "notes"
+
+                Configuration (zcfg): db.dir sets the database root (default: current directory)
+                  ~/.%s/app.properties, ./app.properties, or -Ddb.dir=<path>
+                """.formatted(NAME, TOOL, NAME));
     }
-    var key = args[2];
-    validate(key, "key");
-    var page = recordPage(table, key);
-    var record = Files.exists(page) ? fields(page) : new TreeMap<String, String>();
-    if (args.length == 4 && !args[3].contains("=") && args[3].contains(",")) {
-        record.putAll(positionalFields(table, args[3]));
-    } else if (args.length == 4 && !args[3].contains("=")) {
-        var appending = args[3].endsWith("+");
-        var field = appending ? args[3].substring(0, args[3].length() - 1) : args[3];
-        assign(record, field, new String(System.in.readAllBytes(), StandardCharsets.UTF_8).strip(), appending);
-    } else {
-        for (var index = 3; index < args.length; index++) {
-            var assignment = args[index];
-            var separator = assignment.indexOf('=');
-            if (separator < 1) {
-                fail("expected <field>=<value> or <field>+=<value>, got: " + assignment);
+
+    // zcl (https://github.com/AdamBien/zcl), trimmed; SYSTEM and SUCCESS write to
+    // stderr here so stdout stays pure data for piping
+    enum Log {
+
+        ERROR(Color.RED, System.err),
+        USER(Color.CYAN, System.out),
+        SYSTEM(Color.BLUE, System.err),
+        SUCCESS(Color.MAGENTA, System.err);
+
+        private PrintStream out;
+
+        enum Color {
+            RED("\033[38;2;220;50;47m"),          // Solarized Red #dc322f
+            MAGENTA("\033[38;2;211;54;130m"),     // Solarized Magenta #d33682
+            BLUE("\033[38;2;38;139;210m"),        // Solarized Blue #268bd2
+            CYAN("\033[38;2;42;161;152m");        // Solarized Cyan #2aa198
+
+            String code;
+
+            Color(String code) {
+                this.code = code;
             }
-            var appending = assignment.charAt(separator - 1) == '+';
-            var field = assignment.substring(0, appending ? separator - 1 : separator);
-            assign(record, field, assignment.substring(separator + 1), appending);
+        }
+
+        private final String value;
+        private final static String RESET = "\u001B[0m";
+
+        private Log(Color color, PrintStream out) {
+            this.value = (color.code + "%s" + RESET);
+            this.out = out;
+        }
+
+        String formatted(String raw) {
+            return this.value.formatted(raw);
+        }
+
+        void out(String message) {
+            var colored = formatted(message);
+            this.out.println(colored);
+        }
+
+        public static void error(String message) {
+            Log.ERROR.out(message);
+        }
+
+        public static void user(String message) {
+            Log.USER.out(message);
+        }
+
+        public static void system(String message) {
+            Log.SYSTEM.out(message);
+        }
+
+        public static void success(String message) {
+            Log.SUCCESS.out(message);
         }
     }
-    saveRecord(table, key, record);
-    Log.success("stored: " + table + "/" + key + PAGE_SUFFIX);
 }
 
-/// Replaces a field's value, or appends to it. Appending joins with a newline
-/// so a field grows into a readable log rather than one run-on line; a missing
-/// or blank field takes the value as is, making `+=` safe as the first write.
-void assign(SortedMap<String, String> record, String field, String value, boolean appending) {
-    validate(field, "field");
-    var existing = record.get(field);
-    record.put(field, !appending || existing == null || existing.isBlank() ? value : existing + "\n" + value);
-}
+/// Stateless record, index and rendering functions owning all file I/O.
+interface Control {
 
-/// Appends a record under a generated timestamp key. Each value is a separate
-/// shell argument (not CSV), so field values may themselves contain commas.
-void add(String table, String... args) throws Exception {
-    if (args.length < 3) {
-        fail("usage: " + commandPrefix(table) + " add <value>...");
+    String INDEX_PAGE = "index.html";
+    String PAGE_SUFFIX = ".html";
+    String PROPERTIES_FILE = "app.properties";
+    String KEY_COLUMN = "key";
+    String COLUMN_GAP = "  ";
+    int MAX_CELL = 40;
+    Path DB_DIR = Path.of(configuration().getProperty("db.dir", "."));
+
+    /// Serialises the record to its XHTML page and regenerates the affected table
+    /// and root index navigation so the browsable site stays consistent.
+    static void saveRecord(String table, String key, SortedMap<String, String> record) throws Exception {
+        Files.createDirectories(DB_DIR.resolve(table));
+        var definitions = ordered(columnNames(table), record).entrySet().stream()
+                .map(entry -> "    <dt>%s</dt>\n    <dd>%s</dd>".formatted(escape(entry.getKey()), escape(entry.getValue())))
+                .collect(Collectors.joining("\n"));
+        var list = record.isEmpty() ? "  <dl></dl>" : "  <dl>\n%s\n  </dl>".formatted(definitions);
+        atomicWrite(recordPage(table, key), page(key, breadcrumb(INDEX_PAGE, table), list + "\n" + updatedFooter()));
+        updateTableIndex(table);
+        updateRootIndex();
     }
-    var key = generatedKey(table);
-    saveRecord(table, key, positionalFields(table, List.of(args).subList(2, args.length)));
-    Log.success("added: " + table + "/" + key + PAGE_SUFFIX);
-}
 
-/// Builds a sortable second-resolution timestamp key, suffixing `-2`, `-3`… on
-/// same-second collisions so a rapid burst of adds never silently overwrites.
-String generatedKey(String table) {
-    var timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd-HHmmss"));
-    var key = timestamp;
-    for (var counter = 2; Files.exists(recordPage(table, key)); counter++) {
-        key = timestamp + "-" + counter;
+    /// The record's stored fields, or an empty record when the page does not exist
+    /// yet — `set` merges into either.
+    static SortedMap<String, String> record(String table, String key) throws Exception {
+        var page = recordPage(table, key);
+        return Files.exists(page) ? fields(page) : new TreeMap<>();
     }
-    return key;
-}
 
-/// Renders the command prefix for usage hints so a symlink persona shows
-/// `talks add …` rather than the doubled `talks talks add …`.
-String commandPrefix(String table) {
-    return name.equals(table) ? name : name + " " + table;
-}
-
-void get(String table, String... args) throws Exception {
-    if (args.length < 3) {
-        fail("usage: " + name + " <table> get <key> [field]");
-    }
-    var page = recordPage(table, args[2]);
-    if (!Files.exists(page)) {
-        fail("no such key: " + args[2]);
-    }
-    var record = fields(page);
-    if (args.length > 3) {
-        var value = record.get(args[3]);
-        if (value == null) {
-            fail("no such field: " + args[3]);
+    /// The record's stored fields; a missing page ends the command, since `get`
+    /// and field removal only make sense on an existing record.
+    static SortedMap<String, String> existingRecord(String table, String key) throws Exception {
+        var page = recordPage(table, key);
+        if (!Files.exists(page)) {
+            Boundary.fail("no such key: " + key);
         }
-        IO.println(value);
-    } else {
-        printLines(recordLines(ordered(columnNames(table), record)));
+        return fields(page);
     }
-}
 
-/// Defines (or, without arguments, prints) the positional column order used by
-/// `set` and `add`, persisting it into the table's generated `index.html`. All
-/// arguments past the command count as one list, since a blank after a comma
-/// makes the shell deliver the names as separate arguments.
-void columns(String table, String... args) throws Exception {
-    if (args.length < 3) {
-        printLines(columnNames(table).isEmpty() ? List.of() : List.of(String.join(",", columnNames(table))));
-        return;
-    }
-    var columns = Stream.of(args)
-            .skip(2)
-            .flatMap(argument -> Stream.of(argument.split(",")))
-            .map(String::strip)
-            .filter(column -> !column.isEmpty())
-            .toList();
-    for (var column : columns) {
-        validate(column, "field");
-    }
-    Files.createDirectories(dbDir.resolve(table));
-    updateTableIndex(table, columns);
-    updateRootIndex();
-    Log.success("columns for " + table + ": " + String.join(",", columns));
-}
-
-/// CSV overload for `set`: splits on commas with a `-1` limit so trailing empty
-/// values still map to their columns.
-SortedMap<String, String> positionalFields(String table, String csv) throws Exception {
-    return positionalFields(table, List.of(csv.split(",", -1)));
-}
-
-/// Maps values onto the table's declared columns by position; requires columns
-/// to be defined and rejects more values than there are columns.
-SortedMap<String, String> positionalFields(String table, List<String> values) throws Exception {
-    var columns = columnNames(table);
-    if (columns.isEmpty()) {
-        fail("no columns defined, run: " + commandPrefix(table) + " columns <name,name,...>");
-    }
-    if (values.size() > columns.size()) {
-        fail("%d values but only %d columns: %s".formatted(values.size(), columns.size(), String.join(",", columns)));
-    }
-    var record = new TreeMap<String, String>();
-    for (var index = 0; index < values.size(); index++) {
-        record.put(columns.get(index), values.get(index).strip());
-    }
-    return record;
-}
-
-/// Reads the declared column order from the `<code>` element that [#columns]
-/// writes into the table's `index.html`.
-List<String> columnNames(String table) throws Exception {
-    var index = dbDir.resolve(table).resolve(INDEX_PAGE);
-    if (!Files.exists(index)) {
-        return List.of();
-    }
-    var codes = parse(index).getElementsByTagName("code");
-    if (codes.getLength() == 0) {
-        return List.of();
-    }
-    return Stream.of(codes.item(0).getTextContent().split(","))
-            .map(String::strip)
-            .toList();
-}
-
-/// Renders the table as one row per record — a record spread over one line per
-/// field is unreadable past a handful of records. Filter terms narrow it to the
-/// matching records, in [#find]'s syntax. Aligned for reading rather than
-/// piping; `keys`, `get` and `find` stay tab separated.
-List<String> listing(String table, List<String> terms) throws Exception {
-    var records = matching(table, terms);
-    if (records.isEmpty()) {
-        return List.of();
-    }
-    var headers = headers(columnNames(table), records.values());
-    var body = records.entrySet().stream().map(entry -> row(entry.getKey(), headers, entry.getValue()));
-    return aligned(Stream.concat(Stream.of(headers), body).toList());
-}
-
-/// Table columns: the key, then the declared columns, then any remaining field
-/// names the records carry, sorted. Declared columns appear even when empty —
-/// the schema, not the data, defines the table's shape.
-List<String> headers(List<String> columns, Collection<SortedMap<String, String>> records) {
-    var extras = records.stream().flatMap(record -> record.keySet().stream()).sorted();
-    return Stream.of(Stream.of(KEY_COLUMN), columns.stream(), extras)
-            .flatMap(Function.identity())
-            .distinct()
-            .toList();
-}
-
-List<String> row(String key, List<String> headers, SortedMap<String, String> record) {
-    return headers.stream()
-            .map(header -> header.equals(KEY_COLUMN) ? key : cell(record.getOrDefault(header, "")))
-            .toList();
-}
-
-/// Collapses a value onto one line and cuts it at [#MAX_CELL], since a
-/// multi-line or long body would otherwise wrap and destroy the layout. The
-/// full value stays available through `get`; keys are never cut, so they remain
-/// usable as `get` arguments.
-String cell(String value) {
-    var single = value.replaceAll("\\s+", " ").strip();
-    return single.length() <= MAX_CELL ? single : single.substring(0, MAX_CELL - 1) + "…";
-}
-
-/// Pads every cell to its column's widest entry, then strips the line end, so
-/// the trailing column needs no special case to avoid trailing whitespace.
-List<String> aligned(List<List<String>> rows) {
-    var widths = IntStream.range(0, rows.getFirst().size())
-            .map(column -> rows.stream().mapToInt(row -> row.get(column).length()).max().orElse(0))
-            .boxed()
-            .toList();
-    return rows.stream()
-            .map(row -> IntStream.range(0, row.size())
-                    .mapToObj(column -> pad(row.get(column), widths.get(column)))
-                    .collect(Collectors.joining(COLUMN_GAP))
-                    .stripTrailing())
-            .toList();
-}
-
-String pad(String cell, int width) {
-    return cell + " ".repeat(width - cell.length());
-}
-
-/// Filters a table, printing key<TAB>label so a hit says what it is rather than
-/// only when it was written. Same terms as `list`, different output: `find` is
-/// the pipeable one.
-void find(String table, String... args) throws Exception {
-    if (args.length < 3) {
-        fail("usage: " + commandPrefix(table) + " find <text> | <field>=<text> ...");
-    }
-    var columns = columnNames(table);
-    printLines(matching(table, terms(args)).entrySet().stream()
-            .map(entry -> entry.getKey() + "\t" + label(columns, entry.getValue(), entry.getKey()))
-            .toList());
-}
-
-/// The filter terms of a command: everything past the command word.
-List<String> terms(String... args) {
-    return List.of(args).subList(2, args.length);
-}
-
-/// Selects the records satisfying every term, in key order — a second term
-/// narrows the first rather than widening it, so a filter reads as a path into
-/// the table. An empty result ends the command with exit code 1: a filter that
-/// matches nothing is a miss, not an empty table. Without terms the whole table
-/// passes, and an empty one stays a success.
-SequencedMap<String, SortedMap<String, String>> matching(String table, List<String> terms) throws Exception {
-    var filters = terms.stream().map(Filter::of).toList();
-    var records = new LinkedHashMap<String, SortedMap<String, String>>();
-    for (var key : keys(table)) {
-        var record = fields(recordPage(table, key));
-        if (filters.stream().allMatch(filter -> filter.matches(record, key))) {
-            records.put(key, record);
+    static void deleteRecord(String table, String key) throws Exception {
+        var page = recordPage(table, key);
+        if (!Files.exists(page)) {
+            Boundary.fail("no such key: " + key);
         }
-    }
-    if (records.isEmpty() && !filters.isEmpty()) {
-        fail("no match: " + String.join(" ", terms));
-    }
-    return records;
-}
-
-/// A case-insensitive substring, optionally scoped to a single field.
-record Filter(String field, String text) {
-
-    static Filter of(String term) {
-        var separator = term.indexOf('=');
-        return separator < 1
-                ? new Filter(null, term.toLowerCase())
-                : new Filter(term.substring(0, separator), term.substring(separator + 1).toLowerCase());
-    }
-
-    /// A field-scoped term matches only that field, and only where the record
-    /// actually carries it — so a bare `field=` selects the records having it.
-    /// A bare term also matches the key, so a date fragment finds every record
-    /// added that day.
-    boolean matches(SortedMap<String, String> record, String key) {
-        if (this.field != null) {
-            var value = record.get(this.field);
-            return value != null && value.toLowerCase().contains(this.text);
-        }
-        return key.toLowerCase().contains(this.text)
-                || record.values().stream().anyMatch(value -> value.toLowerCase().contains(this.text));
-    }
-}
-
-List<String> recordLines(Map<String, String> record) {
-    return record.entrySet().stream()
-            .map(entry -> entry.getKey() + "\t" + entry.getValue())
-            .toList();
-}
-
-/// Arranges a record's fields in the table's declared column order, so a page,
-/// `get` and `list` all read in schema order rather than alphabetically. Fields
-/// outside the schema keep their alphabetical order and follow the declared
-/// ones; without declared columns the record stays alphabetical.
-SequencedMap<String, String> ordered(List<String> columns, SortedMap<String, String> record) {
-    var declaredFirst = Stream.concat(columns.stream(), record.keySet().stream()).distinct();
-    return declaredFirst
-            .filter(record::containsKey)
-            .collect(Collectors.toMap(Function.identity(), record::get, (first, _) -> first, LinkedHashMap::new));
-}
-
-void printLines(List<String> lines) {
-    if (!lines.isEmpty()) {
-        IO.println(String.join("\n", lines));
-    }
-}
-
-void rm(String table, String... args) throws Exception {
-    if (args.length < 3) {
-        fail("usage: " + name + " <table> rm <key> [field]");
-    }
-    var key = args[2];
-    var page = recordPage(table, key);
-    if (!Files.exists(page)) {
-        fail("no such key: " + key);
-    }
-    if (args.length > 3) {
-        var record = fields(page);
-        if (record.remove(args[3]) == null) {
-            fail("no such field: " + args[3]);
-        }
-        saveRecord(table, key, record);
-        Log.success("removed: " + args[3] + " from " + table + "/" + key + PAGE_SUFFIX);
-    } else {
         Files.delete(page);
         updateTableIndex(table);
         updateRootIndex();
-        Log.success("removed: " + table + "/" + key + PAGE_SUFFIX);
     }
-}
 
-/// Serialises the record to its XHTML page and regenerates the affected table
-/// and root index navigation so the browsable site stays consistent.
-void saveRecord(String table, String key, SortedMap<String, String> record) throws Exception {
-    Files.createDirectories(dbDir.resolve(table));
-    var definitions = ordered(columnNames(table), record).entrySet().stream()
-            .map(entry -> "    <dt>%s</dt>\n    <dd>%s</dd>".formatted(escape(entry.getKey()), escape(entry.getValue())))
-            .collect(Collectors.joining("\n"));
-    var list = record.isEmpty() ? "  <dl></dl>" : "  <dl>\n%s\n  </dl>".formatted(definitions);
-    atomicWrite(recordPage(table, key), page(key, breadcrumb(INDEX_PAGE, table), list + "\n" + updatedFooter()));
-    updateTableIndex(table);
-    updateRootIndex();
-}
-
-String updatedFooter() {
-    var updated = Instant.now().truncatedTo(ChronoUnit.SECONDS);
-    return """
-              <footer>
-                <p>updated <time datetime="%s">%s</time></p>
-              </footer>\
-            """.formatted(updated, updated);
-}
-
-Document parse(Path page) throws Exception {
-    return DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(page.toFile());
-}
-
-/// Reconstructs a record by pairing `<dt>`/`<dd>` elements — the XHTML page is
-/// both the on-disk storage format and the browsable UI.
-SortedMap<String, String> fields(Path recordPage) throws Exception {
-    var document = parse(recordPage);
-    var names = document.getElementsByTagName("dt");
-    var values = document.getElementsByTagName("dd");
-    var record = new TreeMap<String, String>();
-    for (var index = 0; index < Math.min(names.getLength(), values.getLength()); index++) {
-        record.put(names.item(index).getTextContent(), values.item(index).getTextContent());
+    /// Persists the positional column order into the table's generated
+    /// `index.html`, creating the table folder on first use.
+    static void defineColumns(String table, List<String> columns) throws Exception {
+        Files.createDirectories(DB_DIR.resolve(table));
+        updateTableIndex(table, columns);
+        updateRootIndex();
     }
-    return record;
-}
 
-List<String> keys(String table) throws Exception {
-    var folder = dbDir.resolve(table);
-    if (!Files.isDirectory(folder)) {
-        fail("no such table: " + table);
-    }
-    try (var pages = Files.list(folder)) {
-        return pages
-                .map(page -> page.getFileName().toString())
-                .filter(this::isRecordPage)
-                .map(fileName -> fileName.substring(0, fileName.length() - PAGE_SUFFIX.length()))
-                .sorted()
-                .toList();
-    }
-}
-
-boolean isRecordPage(String fileName) {
-    return fileName.endsWith(PAGE_SUFFIX) && !fileName.equals(INDEX_PAGE);
-}
-
-void updateTableIndex(String table) throws Exception {
-    updateTableIndex(table, columnNames(table));
-}
-
-void updateTableIndex(String table, List<String> columns) throws Exception {
-    var links = new ArrayList<String>();
-    for (var key : keys(table)) {
-        links.add(link(key + PAGE_SUFFIX, label(table, key, columns)));
-    }
-    var content = columnsSection(columns) + navigation(String.join("\n", links));
-    atomicWrite(dbDir.resolve(table).resolve(INDEX_PAGE), page(table, breadcrumb("../" + INDEX_PAGE, name), content));
-}
-
-/// Labels an index entry with the record's first column value: a generated
-/// timestamp key identifies a record but says nothing about it, while the
-/// leading field is what the record is about. Falls back to the key when no
-/// columns are declared or the record has no value for the first one.
-String label(String table, String key, List<String> columns) throws Exception {
-    return label(columns, fields(recordPage(table, key)), key);
-}
-
-/// Labels an already loaded record, so callers holding its fields — [#find] —
-/// do not parse the page a second time.
-String label(List<String> columns, SortedMap<String, String> record, String key) {
-    if (columns.isEmpty()) {
+    /// Builds a sortable second-resolution timestamp key, suffixing `-2`, `-3`… on
+    /// same-second collisions so a rapid burst of adds never silently overwrites.
+    static String generatedKey(String table) {
+        var timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd-HHmmss"));
+        var key = timestamp;
+        for (var counter = 2; Files.exists(recordPage(table, key)); counter++) {
+            key = timestamp + "-" + counter;
+        }
         return key;
     }
-    var value = record.getOrDefault(columns.getFirst(), "");
-    return value.isBlank() ? key : value;
-}
 
-String columnsSection(List<String> columns) {
-    return columns.isEmpty() ? "" : "  <p>columns: <code>%s</code></p>\n".formatted(escape(String.join(", ", columns)));
-}
-
-void updateRootIndex() throws Exception {
-    var links = tableNames().stream()
-            .map(table -> link(table + "/" + INDEX_PAGE, table))
-            .collect(Collectors.joining("\n"));
-    atomicWrite(dbDir.resolve(INDEX_PAGE), page(name, "", navigation(links)));
-}
-
-String link(String href, String label) {
-    return "      <li><a href=\"%s\">%s</a></li>".formatted(href, escape(label));
-}
-
-String navigation(String links) {
-    return links.isEmpty() ? "  <nav><ul></ul></nav>" : "  <nav>\n    <ul>\n%s\n    </ul>\n  </nav>".formatted(links);
-}
-
-List<String> tableNames() throws Exception {
-    if (!Files.isDirectory(dbDir)) {
-        return List.of();
+    /// Replaces a field's value, or appends to it. Appending joins with a newline
+    /// so a field grows into a readable log rather than one run-on line; a missing
+    /// or blank field takes the value as is, making `+=` safe as the first write.
+    static void assign(SortedMap<String, String> record, String field, String value, boolean appending) {
+        validate(field, "field");
+        var existing = record.get(field);
+        record.put(field, !appending || existing == null || existing.isBlank() ? value : existing + "\n" + value);
     }
-    try (var folders = Files.list(dbDir)) {
-        return folders
-                .filter(Files::isDirectory)
-                .filter(this::isTable)
-                .map(folder -> folder.getFileName().toString())
-                .sorted()
+
+    /// CSV overload for `set`: splits on commas with a `-1` limit so trailing empty
+    /// values still map to their columns.
+    static SortedMap<String, String> positionalFields(String table, String csv) throws Exception {
+        return positionalFields(table, List.of(csv.split(",", -1)));
+    }
+
+    /// Maps values onto the table's declared columns by position; requires columns
+    /// to be defined and rejects more values than there are columns.
+    static SortedMap<String, String> positionalFields(String table, List<String> values) throws Exception {
+        var columns = columnNames(table);
+        if (columns.isEmpty()) {
+            Boundary.fail("no columns defined, run: " + Boundary.commandPrefix(table) + " columns <name,name,...>");
+        }
+        if (values.size() > columns.size()) {
+            Boundary.fail("%d values but only %d columns: %s".formatted(values.size(), columns.size(), String.join(",", columns)));
+        }
+        var record = new TreeMap<String, String>();
+        for (var index = 0; index < values.size(); index++) {
+            record.put(columns.get(index), values.get(index).strip());
+        }
+        return record;
+    }
+
+    /// Reads the declared column order from the `<code>` element that
+    /// [Boundary#columns] writes into the table's `index.html`.
+    static List<String> columnNames(String table) throws Exception {
+        var index = DB_DIR.resolve(table).resolve(INDEX_PAGE);
+        if (!Files.exists(index)) {
+            return List.of();
+        }
+        var codes = parse(index).getElementsByTagName("code");
+        if (codes.getLength() == 0) {
+            return List.of();
+        }
+        return Stream.of(codes.item(0).getTextContent().split(","))
+                .map(String::strip)
                 .toList();
     }
-}
 
-boolean isTable(Path folder) {
-    return Files.exists(folder.resolve(INDEX_PAGE));
-}
-
-Path recordPage(String table, String key) {
-    return dbDir.resolve(table).resolve(key + PAGE_SUFFIX);
-}
-
-/// Enforces the name grammar and rejects `index` as a table or key name, since
-/// every table folder owns a generated `index.html`.
-void validate(String identifier, String kind) {
-    if (!identifier.matches("[A-Za-z0-9_][A-Za-z0-9_-]*")) {
-        fail("invalid %s name: %s (allowed: letters, digits, _ and -)".formatted(kind, identifier));
+    /// Renders the table as one row per record — a record spread over one line per
+    /// field is unreadable past a handful of records. Filter terms narrow it to the
+    /// matching records, in [Boundary#find]'s syntax. Aligned for reading rather
+    /// than piping; `keys`, `get` and `find` stay tab separated.
+    static List<String> listing(String table, List<String> terms) throws Exception {
+        var records = matching(table, terms);
+        if (records.isEmpty()) {
+            return List.of();
+        }
+        var headers = headers(columnNames(table), records.values());
+        var body = records.entrySet().stream().map(entry -> row(entry.getKey(), headers, entry.getValue()));
+        return aligned(Stream.concat(Stream.of(headers), body).toList());
     }
-    if (!kind.equals("field") && identifier.equals("index")) {
-        fail("'index' is a reserved %s name".formatted(kind));
+
+    /// Table columns: the key, then the declared columns, then any remaining field
+    /// names the records carry, sorted. Declared columns appear even when empty —
+    /// the schema, not the data, defines the table's shape.
+    static List<String> headers(List<String> columns, Collection<SortedMap<String, String>> records) {
+        var extras = records.stream().flatMap(record -> record.keySet().stream()).sorted();
+        return Stream.of(Stream.of(KEY_COLUMN), columns.stream(), extras)
+                .flatMap(Function.identity())
+                .distinct()
+                .toList();
     }
-}
 
-String page(String title, String breadcrumb, String content) {
-    return """
-            <!DOCTYPE html>
-            <html xmlns="http://www.w3.org/1999/xhtml" lang="en">
-            <head>
-              <meta charset="utf-8"/>
-              <title>%s</title>
-              <style>
-                :root { color-scheme: light dark; }
-                body { font-family: system-ui, sans-serif; line-height: 1.6; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
-                dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1.5rem; }
-                dt { font-weight: 600; }
-                dd { margin: 0; white-space: pre-wrap; }
-                nav ul { list-style: none; padding: 0; }
-                footer { font-size: 0.8rem; opacity: 0.6; }
-              </style>
-            </head>
-            <body>
-            %s<main>
-              <h1>%s</h1>
-            %s
-            </main>
-            </body>
-            </html>
-            """.formatted(escape(title), breadcrumb, escape(title), content);
-}
+    static List<String> row(String key, List<String> headers, SortedMap<String, String> record) {
+        return headers.stream()
+                .map(header -> header.equals(KEY_COLUMN) ? key : cell(record.getOrDefault(header, "")))
+                .toList();
+    }
 
-String breadcrumb(String href, String label) {
-    return """
-            <header>
-              <nav><a href="%s">↑ %s</a></nav>
-            </header>
-            """.formatted(href, label);
-}
+    /// Collapses a value onto one line and cuts it at [#MAX_CELL], since a
+    /// multi-line or long body would otherwise wrap and destroy the layout. The
+    /// full value stays available through `get`; keys are never cut, so they remain
+    /// usable as `get` arguments.
+    static String cell(String value) {
+        var single = value.replaceAll("\\s+", " ").strip();
+        return single.length() <= MAX_CELL ? single : single.substring(0, MAX_CELL - 1) + "…";
+    }
 
-/// Writes via a temp file plus `ATOMIC_MOVE` so concurrent readers (browsers,
-/// git) never observe a half-written page.
-void atomicWrite(Path target, String content) throws Exception {
-    var temp = Files.createTempFile(target.getParent(), "." + name, ".tmp");
-    temp.toFile().setReadable(true, false);
-    Files.writeString(temp, content);
-    Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-}
+    /// Pads every cell to its column's widest entry, then strips the line end, so
+    /// the trailing column needs no special case to avoid trailing whitespace.
+    static List<String> aligned(List<List<String>> rows) {
+        var widths = IntStream.range(0, rows.getFirst().size())
+                .map(column -> rows.stream().mapToInt(row -> row.get(column).length()).max().orElse(0))
+                .boxed()
+                .toList();
+        return rows.stream()
+                .map(row -> IntStream.range(0, row.size())
+                        .mapToObj(column -> pad(row.get(column), widths.get(column)))
+                        .collect(Collectors.joining(COLUMN_GAP))
+                        .stripTrailing())
+                .toList();
+    }
 
-/// Layers configuration global, then local, then system properties, so
-/// `-Ddb.dir` overrides the files. The global path `~/.<name>/` follows the
-/// symlink persona.
-Properties loadConfiguration() throws Exception {
-    var configuration = new Properties();
-    var global = Path.of(System.getProperty("user.home"), "." + name, PROPERTIES_FILE);
-    var local = Path.of(PROPERTIES_FILE);
-    for (var candidate : List.of(global, local)) {
-        if (Files.exists(candidate)) {
-            try (var reader = Files.newBufferedReader(candidate)) {
-                configuration.load(reader);
+    static String pad(String cell, int width) {
+        return cell + " ".repeat(width - cell.length());
+    }
+
+    /// Selects the records satisfying every term, in key order — a second term
+    /// narrows the first rather than widening it, so a filter reads as a path into
+    /// the table. An empty result ends the command with exit code 1: a filter that
+    /// matches nothing is a miss, not an empty table. Without terms the whole table
+    /// passes, and an empty one stays a success.
+    static SequencedMap<String, SortedMap<String, String>> matching(String table, List<String> terms) throws Exception {
+        var filters = terms.stream().map(Entity.Filter::of).toList();
+        var records = new LinkedHashMap<String, SortedMap<String, String>>();
+        for (var key : keys(table)) {
+            var record = fields(recordPage(table, key));
+            if (filters.stream().allMatch(filter -> filter.matches(record, key))) {
+                records.put(key, record);
             }
         }
+        if (records.isEmpty() && !filters.isEmpty()) {
+            Boundary.fail("no match: " + String.join(" ", terms));
+        }
+        return records;
     }
-    configuration.putAll(System.getProperties());
-    return configuration;
-}
 
-String escape(String text) {
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
-}
+    static List<String> recordLines(Map<String, String> record) {
+        return record.entrySet().stream()
+                .map(entry -> entry.getKey() + "\t" + entry.getValue())
+                .toList();
+    }
 
-void fail(String message) {
-    Log.error(message);
-    System.exit(1);
-}
+    /// Arranges a record's fields in the table's declared column order, so a page,
+    /// `get` and `list` all read in schema order rather than alphabetically. Fields
+    /// outside the schema keep their alphabetical order and follow the declared
+    /// ones; without declared columns the record stays alphabetical.
+    static SequencedMap<String, String> ordered(List<String> columns, SortedMap<String, String> record) {
+        var declaredFirst = Stream.concat(columns.stream(), record.keySet().stream()).distinct();
+        return declaredFirst
+                .filter(record::containsKey)
+                .collect(Collectors.toMap(Function.identity(), record::get, (first, _) -> first, LinkedHashMap::new));
+    }
 
-void help() {
-    Log.user("""
-            Usage: %s <table> <command> [arguments]
-
-            Each record is its own XHTML page (<table>/<key>.html) holding a <dl> of fields.
-
-            Commands:
-              <table> set <key> <field>=<value>...  store fields (merged into the record)
-              <table> set <key> <field>+=<value>... append to fields (newline separated)
-              <table> set <key> <field>             store one field, value from stdin
-              <table> set <key> <field>+            append one field, value from stdin
-              <table> set <key> <v1,v2,...>         store values positionally by table columns
-              <table> add <value>...                add a record with a generated timestamp key
-              <table> columns <name,name,...>       define column order for positional set and add
-              <table> columns                       print the column order
-              <table> get <key>                     print all fields as field<TAB>value lines
-              <table> get <key> <field>             print one field value
-              <table> rm <key>                      remove a record
-              <table> rm <key> <field>              remove one field
-              <table> keys                          print all keys, sorted
-              <table> list [<term>...]              print the records as an aligned table
-              <table> find <term>...                print key<TAB>label for matching records
-              tables                                list all tables
-              -help                                 show this help
-              -version                              show version
-
-            A term filters case-insensitively: <text> matches any field or the key,
-            <field>=<text> only that field, <field>= the records having it at all.
-            Several terms narrow each other - every one of them has to match.
-
-            Table, key and field names: letters, digits, _ and - ('index' is a reserved table/key name)
-
-            A symlink named after a table becomes a dedicated CLI with its own configuration:
-              ln -s %s talks && talks add "Java 25" "notes"
-
-            Configuration (zcfg): db.dir sets the database root (default: current directory)
-              ~/.%s/app.properties, ./app.properties, or -Ddb.dir=<path>
-            """.formatted(name, TOOL, name));
-}
-
-// zcl (https://github.com/AdamBien/zcl), trimmed; SYSTEM and SUCCESS write to
-// stderr here so stdout stays pure data for piping
-enum Log {
-
-    ERROR(Color.RED, System.err),
-    USER(Color.CYAN, System.out),
-    SYSTEM(Color.BLUE, System.err),
-    SUCCESS(Color.MAGENTA, System.err);
-
-    private PrintStream out;
-
-    enum Color {
-        RED("\033[38;2;220;50;47m"),          // Solarized Red #dc322f
-        MAGENTA("\033[38;2;211;54;130m"),     // Solarized Magenta #d33682
-        BLUE("\033[38;2;38;139;210m"),        // Solarized Blue #268bd2
-        CYAN("\033[38;2;42;161;152m");        // Solarized Cyan #2aa198
-
-        String code;
-
-        Color(String code) {
-            this.code = code;
+    static List<String> keys(String table) throws Exception {
+        var folder = DB_DIR.resolve(table);
+        if (!Files.isDirectory(folder)) {
+            Boundary.fail("no such table: " + table);
+        }
+        try (var pages = Files.list(folder)) {
+            return pages
+                    .map(page -> page.getFileName().toString())
+                    .filter(Control::isRecordPage)
+                    .map(fileName -> fileName.substring(0, fileName.length() - PAGE_SUFFIX.length()))
+                    .sorted()
+                    .toList();
         }
     }
 
-    private final String value;
-    private final static String RESET = "\u001B[0m";
-
-    private Log(Color color, PrintStream out) {
-        this.value = (color.code + "%s" + RESET);
-        this.out = out;
+    static boolean isRecordPage(String fileName) {
+        return fileName.endsWith(PAGE_SUFFIX) && !fileName.equals(INDEX_PAGE);
     }
 
-    String formatted(String raw) {
-        return this.value.formatted(raw);
+    static List<String> tableNames() throws Exception {
+        if (!Files.isDirectory(DB_DIR)) {
+            return List.of();
+        }
+        try (var folders = Files.list(DB_DIR)) {
+            return folders
+                    .filter(Files::isDirectory)
+                    .filter(Control::isTable)
+                    .map(folder -> folder.getFileName().toString())
+                    .sorted()
+                    .toList();
+        }
     }
 
-    void out(String message) {
-        var colored = formatted(message);
-        this.out.println(colored);
+    static boolean isTable(Path folder) {
+        return Files.exists(folder.resolve(INDEX_PAGE));
     }
 
-    public static void error(String message) {
-        Log.ERROR.out(message);
+    static Path recordPage(String table, String key) {
+        return DB_DIR.resolve(table).resolve(key + PAGE_SUFFIX);
     }
 
-    public static void user(String message) {
-        Log.USER.out(message);
+    /// Reconstructs a record by pairing `<dt>`/`<dd>` elements — the XHTML page is
+    /// both the on-disk storage format and the browsable UI.
+    static SortedMap<String, String> fields(Path recordPage) throws Exception {
+        var document = parse(recordPage);
+        var names = document.getElementsByTagName("dt");
+        var values = document.getElementsByTagName("dd");
+        var record = new TreeMap<String, String>();
+        for (var index = 0; index < Math.min(names.getLength(), values.getLength()); index++) {
+            record.put(names.item(index).getTextContent(), values.item(index).getTextContent());
+        }
+        return record;
     }
 
-    public static void system(String message) {
-        Log.SYSTEM.out(message);
+    static Document parse(Path page) throws Exception {
+        return DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(page.toFile());
     }
 
-    public static void success(String message) {
-        Log.SUCCESS.out(message);
+    static void updateTableIndex(String table) throws Exception {
+        updateTableIndex(table, columnNames(table));
     }
+
+    static void updateTableIndex(String table, List<String> columns) throws Exception {
+        var links = new ArrayList<String>();
+        for (var key : keys(table)) {
+            links.add(link(key + PAGE_SUFFIX, label(table, key, columns)));
+        }
+        var content = columnsSection(columns) + navigation(String.join("\n", links));
+        atomicWrite(DB_DIR.resolve(table).resolve(INDEX_PAGE), page(table, breadcrumb("../" + INDEX_PAGE, Boundary.NAME), content));
+    }
+
+    static void updateRootIndex() throws Exception {
+        var links = tableNames().stream()
+                .map(table -> link(table + "/" + INDEX_PAGE, table))
+                .collect(Collectors.joining("\n"));
+        atomicWrite(DB_DIR.resolve(INDEX_PAGE), page(Boundary.NAME, "", navigation(links)));
+    }
+
+    /// Labels an index entry with the record's first column value: a generated
+    /// timestamp key identifies a record but says nothing about it, while the
+    /// leading field is what the record is about. Falls back to the key when no
+    /// columns are declared or the record has no value for the first one.
+    static String label(String table, String key, List<String> columns) throws Exception {
+        return label(columns, fields(recordPage(table, key)), key);
+    }
+
+    /// Labels an already loaded record, so callers holding its fields —
+    /// [Boundary#find] — do not parse the page a second time.
+    static String label(List<String> columns, SortedMap<String, String> record, String key) {
+        if (columns.isEmpty()) {
+            return key;
+        }
+        var value = record.getOrDefault(columns.getFirst(), "");
+        return value.isBlank() ? key : value;
+    }
+
+    static String columnsSection(List<String> columns) {
+        return columns.isEmpty() ? "" : "  <p>columns: <code>%s</code></p>\n".formatted(escape(String.join(", ", columns)));
+    }
+
+    static String link(String href, String label) {
+        return "      <li><a href=\"%s\">%s</a></li>".formatted(href, escape(label));
+    }
+
+    static String navigation(String links) {
+        return links.isEmpty() ? "  <nav><ul></ul></nav>" : "  <nav>\n    <ul>\n%s\n    </ul>\n  </nav>".formatted(links);
+    }
+
+    static String page(String title, String breadcrumb, String content) {
+        return """
+                <!DOCTYPE html>
+                <html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+                <head>
+                  <meta charset="utf-8"/>
+                  <title>%s</title>
+                  <style>
+                    :root { color-scheme: light dark; }
+                    body { font-family: system-ui, sans-serif; line-height: 1.6; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+                    dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1.5rem; }
+                    dt { font-weight: 600; }
+                    dd { margin: 0; white-space: pre-wrap; }
+                    nav ul { list-style: none; padding: 0; }
+                    footer { font-size: 0.8rem; opacity: 0.6; }
+                  </style>
+                </head>
+                <body>
+                %s<main>
+                  <h1>%s</h1>
+                %s
+                </main>
+                </body>
+                </html>
+                """.formatted(escape(title), breadcrumb, escape(title), content);
+    }
+
+    static String breadcrumb(String href, String label) {
+        return """
+                <header>
+                  <nav><a href="%s">↑ %s</a></nav>
+                </header>
+                """.formatted(href, label);
+    }
+
+    static String updatedFooter() {
+        var updated = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        return """
+                  <footer>
+                    <p>updated <time datetime="%s">%s</time></p>
+                  </footer>\
+                """.formatted(updated, updated);
+    }
+
+    /// Writes via a temp file plus `ATOMIC_MOVE` so concurrent readers (browsers,
+    /// git) never observe a half-written page.
+    static void atomicWrite(Path target, String content) throws Exception {
+        var temp = Files.createTempFile(target.getParent(), "." + Boundary.NAME, ".tmp");
+        temp.toFile().setReadable(true, false);
+        Files.writeString(temp, content);
+        Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    /// Enforces the name grammar and rejects `index` as a table or key name, since
+    /// every table folder owns a generated `index.html`.
+    static void validate(String identifier, String kind) {
+        if (!identifier.matches("[A-Za-z0-9_][A-Za-z0-9_-]*")) {
+            Boundary.fail("invalid %s name: %s (allowed: letters, digits, _ and -)".formatted(kind, identifier));
+        }
+        if (!kind.equals("field") && identifier.equals("index")) {
+            Boundary.fail("'index' is a reserved %s name".formatted(kind));
+        }
+    }
+
+    static String escape(String text) {
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    /// Layers configuration global, then local, then system properties, so
+    /// `-Ddb.dir` overrides the files. The global path `~/.<name>/` follows the
+    /// symlink persona.
+    static Properties configuration() {
+        var configuration = new Properties();
+        var global = Path.of(System.getProperty("user.home"), "." + Boundary.NAME, PROPERTIES_FILE);
+        var local = Path.of(PROPERTIES_FILE);
+        for (var candidate : List.of(global, local)) {
+            if (Files.exists(candidate)) {
+                try (var reader = Files.newBufferedReader(candidate)) {
+                    configuration.load(reader);
+                } catch (IOException error) {
+                    throw new UncheckedIOException(error);
+                }
+            }
+        }
+        configuration.putAll(System.getProperties());
+        return configuration;
+    }
+}
+
+/// Domain values: filter terms parsed from the command line.
+interface Entity {
+
+    /// A case-insensitive substring, optionally scoped to a single field.
+    record Filter(String field, String text) {
+
+        static Filter of(String term) {
+            var separator = term.indexOf('=');
+            return separator < 1
+                    ? new Filter(null, term.toLowerCase())
+                    : new Filter(term.substring(0, separator), term.substring(separator + 1).toLowerCase());
+        }
+
+        /// A field-scoped term matches only that field, and only where the record
+        /// actually carries it — so a bare `field=` selects the records having it.
+        /// A bare term also matches the key, so a date fragment finds every record
+        /// added that day.
+        boolean matches(SortedMap<String, String> record, String key) {
+            if (this.field != null) {
+                var value = record.get(this.field);
+                return value != null && value.toLowerCase().contains(this.text);
+            }
+            return key.toLowerCase().contains(this.text)
+                    || record.values().stream().anyMatch(value -> value.toLowerCase().contains(this.text));
+        }
+    }
+}
+
+void main(String... args) throws Exception {
+    Boundary.manageDatabase(args);
 }
