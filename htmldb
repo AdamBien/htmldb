@@ -7,9 +7,9 @@ interface Boundary {
 
     String TOOL = "htmldb";
     String NAME = MethodHandles.lookup().lookupClass().getEnclosingClass().getName();
-    String VERSION = "2026-09-14.1";
+    String VERSION = "2026-09-15.1";
 
-    static void manageDatabase(String... args) throws Exception {
+    static void run(String... args) throws Exception {
         Log.system(NAME + " " + VERSION);
         var arguments = tableQualified(args);
         if (arguments.length == 0) {
@@ -731,5 +731,5 @@ interface Entity {
 }
 
 void main(String... args) throws Exception {
-    Boundary.manageDatabase(args);
+    Boundary.run(args);
 }
