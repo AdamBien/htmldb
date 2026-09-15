@@ -9,6 +9,11 @@ interface Boundary {
     String NAME = MethodHandles.lookup().lookupClass().getEnclosingClass().getName();
     String VERSION = "2026-09-15.1";
 
+    /// A parsed command line: the table, the command word and the arguments past
+    /// them — so commands count their parameters from zero instead of skipping
+    /// the leading words over and over.
+    record Invocation(String table, String command, List<String> parameters) {}
+
     static void run(String... args) throws Exception {
         Log.system(NAME + " " + VERSION);
         var arguments = tableQualified(args);
@@ -41,16 +46,17 @@ interface Boundary {
         if (args.length < 2) {
             fail("missing command, see: " + NAME + " -help");
         }
-        switch (args[1]) {
-            case "set" -> set(table, args);
-            case "add" -> add(table, args);
-            case "get" -> get(table, args);
-            case "rm" -> rm(table, args);
+        var invocation = new Invocation(table, args[1], List.of(args).subList(2, args.length));
+        switch (invocation.command()) {
+            case "set" -> set(invocation);
+            case "add" -> add(invocation);
+            case "get" -> get(invocation);
+            case "rm" -> rm(invocation);
             case "keys" -> printLines(Control.keys(table));
-            case "list" -> printLines(Control.listing(table, terms(args)));
-            case "find" -> find(table, args);
-            case "columns" -> columns(table, args);
-            default -> fail("unknown command: " + args[1]);
+            case "list" -> printLines(Control.listing(table, invocation.parameters()));
+            case "find" -> find(invocation);
+            case "columns" -> columns(invocation);
+            default -> fail("unknown command: " + invocation.command());
         }
     }
 
@@ -59,22 +65,25 @@ interface Boundary {
     /// column order, a lone bare name reads its value from stdin, otherwise each
     /// argument is a `field=value` pair. A `+` before the `=` — or after a lone
     /// name — appends instead of replacing.
-    static void set(String table, String... args) throws Exception {
-        if (args.length < 4) {
+    static void set(Invocation invocation) throws Exception {
+        var parameters = invocation.parameters();
+        if (parameters.size() < 2) {
             fail("usage: " + NAME + " <table> set <key> <field>[+]=<value>... | <field>[+] (value from stdin), + appends");
         }
-        var key = args[2];
+        var table = invocation.table();
+        var key = parameters.getFirst();
         Control.validate(key, "key");
         var record = Control.record(table, key);
-        if (args.length == 4 && !args[3].contains("=") && args[3].contains(",")) {
-            record.putAll(Control.positionalFields(table, args[3]));
-        } else if (args.length == 4 && !args[3].contains("=")) {
-            var appending = args[3].endsWith("+");
-            var field = appending ? args[3].substring(0, args[3].length() - 1) : args[3];
+        var assignments = parameters.subList(1, parameters.size());
+        if (assignments.size() == 1 && !assignments.getFirst().contains("=") && assignments.getFirst().contains(",")) {
+            record.putAll(Control.positionalFields(table, assignments.getFirst()));
+        } else if (assignments.size() == 1 && !assignments.getFirst().contains("=")) {
+            var lone = assignments.getFirst();
+            var appending = lone.endsWith("+");
+            var field = appending ? lone.substring(0, lone.length() - 1) : lone;
             Control.assign(record, field, new String(System.in.readAllBytes(), StandardCharsets.UTF_8).strip(), appending);
         } else {
-            for (var index = 3; index < args.length; index++) {
-                var assignment = args[index];
+            for (var assignment : assignments) {
                 var separator = assignment.indexOf('=');
                 if (separator < 1) {
                     fail("expected <field>=<value> or <field>+=<value>, got: " + assignment);
@@ -90,43 +99,47 @@ interface Boundary {
 
     /// Appends a record under a generated timestamp key. Each value is a separate
     /// shell argument (not CSV), so field values may themselves contain commas.
-    static void add(String table, String... args) throws Exception {
-        if (args.length < 3) {
+    static void add(Invocation invocation) throws Exception {
+        var table = invocation.table();
+        if (invocation.parameters().isEmpty()) {
             fail("usage: " + commandPrefix(table) + " add <value>...");
         }
         var key = Control.generatedKey(table);
-        Control.saveRecord(table, key, Control.positionalFields(table, List.of(args).subList(2, args.length)));
+        Control.saveRecord(table, key, Control.positionalFields(table, invocation.parameters()));
         Log.success("added: " + table + "/" + key + Control.PAGE_SUFFIX);
     }
 
-    static void get(String table, String... args) throws Exception {
-        if (args.length < 3) {
+    static void get(Invocation invocation) throws Exception {
+        var parameters = invocation.parameters();
+        if (parameters.isEmpty()) {
             fail("usage: " + NAME + " <table> get <key> [field]");
         }
-        var record = Control.existingRecord(table, args[2]);
-        if (args.length > 3) {
-            var value = record.get(args[3]);
+        var record = Control.existingRecord(invocation.table(), parameters.getFirst());
+        if (parameters.size() > 1) {
+            var value = record.get(parameters.get(1));
             if (value == null) {
-                fail("no such field: " + args[3]);
+                fail("no such field: " + parameters.get(1));
             }
             IO.println(value);
         } else {
-            printLines(Control.recordLines(Control.ordered(Control.columnNames(table), record)));
+            printLines(Control.recordLines(Control.ordered(Control.columnNames(invocation.table()), record)));
         }
     }
 
-    static void rm(String table, String... args) throws Exception {
-        if (args.length < 3) {
+    static void rm(Invocation invocation) throws Exception {
+        var parameters = invocation.parameters();
+        if (parameters.isEmpty()) {
             fail("usage: " + NAME + " <table> rm <key> [field]");
         }
-        var key = args[2];
-        if (args.length > 3) {
+        var table = invocation.table();
+        var key = parameters.getFirst();
+        if (parameters.size() > 1) {
             var record = Control.existingRecord(table, key);
-            if (record.remove(args[3]) == null) {
-                fail("no such field: " + args[3]);
+            if (record.remove(parameters.get(1)) == null) {
+                fail("no such field: " + parameters.get(1));
             }
             Control.saveRecord(table, key, record);
-            Log.success("removed: " + args[3] + " from " + table + "/" + key + Control.PAGE_SUFFIX);
+            Log.success("removed: " + parameters.get(1) + " from " + table + "/" + key + Control.PAGE_SUFFIX);
         } else {
             Control.deleteRecord(table, key);
             Log.success("removed: " + table + "/" + key + Control.PAGE_SUFFIX);
@@ -136,12 +149,13 @@ interface Boundary {
     /// Filters a table, printing key<TAB>label so a hit says what it is rather than
     /// only when it was written. Same terms as `list`, different output: `find` is
     /// the pipeable one.
-    static void find(String table, String... args) throws Exception {
-        if (args.length < 3) {
+    static void find(Invocation invocation) throws Exception {
+        var table = invocation.table();
+        if (invocation.parameters().isEmpty()) {
             fail("usage: " + commandPrefix(table) + " find <text> | <field>=<text> ...");
         }
         var columns = Control.columnNames(table);
-        printLines(Control.matching(table, terms(args)).entrySet().stream()
+        printLines(Control.matching(table, invocation.parameters()).entrySet().stream()
                 .map(entry -> entry.getKey() + "\t" + Control.label(columns, entry.getValue(), entry.getKey()))
                 .toList());
     }
@@ -150,15 +164,15 @@ interface Boundary {
     /// `set` and `add`, persisting it into the table's generated `index.html`. All
     /// arguments past the command count as one list, since a blank after a comma
     /// makes the shell deliver the names as separate arguments.
-    static void columns(String table, String... args) throws Exception {
-        if (args.length < 3) {
+    static void columns(Invocation invocation) throws Exception {
+        var table = invocation.table();
+        if (invocation.parameters().isEmpty()) {
             printLines(Control.columnNames(table).isEmpty()
                     ? List.of()
                     : List.of(String.join(",", Control.columnNames(table))));
             return;
         }
-        var columns = Stream.of(args)
-                .skip(2)
+        var columns = invocation.parameters().stream()
                 .flatMap(argument -> Stream.of(argument.split(",")))
                 .map(String::strip)
                 .filter(column -> !column.isEmpty())
@@ -168,11 +182,6 @@ interface Boundary {
         }
         Control.defineColumns(table, columns);
         Log.success("columns for " + table + ": " + String.join(",", columns));
-    }
-
-    /// The filter terms of a command: everything past the command word.
-    static List<String> terms(String... args) {
-        return List.of(args).subList(2, args.length);
     }
 
     /// Renders the command prefix for usage hints so a symlink persona shows
