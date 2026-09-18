@@ -7,7 +7,7 @@ interface Boundary {
 
     String TOOL = "zhtmldb";
     String NAME = MethodHandles.lookup().lookupClass().getEnclosingClass().getName();
-    String VERSION = "2026-09-15.1";
+    String VERSION = "2026-09-18.1";
 
     /// A parsed command line: the table, the command word and the arguments past
     /// them — so commands count their parameters from zero instead of skipping
@@ -109,12 +109,15 @@ interface Boundary {
         Log.success("added: " + table + "/" + key + Control.PAGE_SUFFIX);
     }
 
+    /// Prints a record, or one of its fields. The key may be abbreviated — a
+    /// timestamp key is tedious to type in full — as long as the abbreviation
+    /// singles out one record.
     static void get(Invocation invocation) throws Exception {
         var parameters = invocation.parameters();
         if (parameters.isEmpty()) {
             fail("usage: " + NAME + " <table> get <key> [field]");
         }
-        var record = Control.existingRecord(invocation.table(), parameters.getFirst());
+        var record = Control.existingRecord(invocation.table(), Control.resolveKey(invocation.table(), parameters.getFirst()));
         if (parameters.size() > 1) {
             var value = record.get(parameters.get(1));
             if (value == null) {
@@ -218,6 +221,7 @@ interface Boundary {
                   <table> columns                       print the column order
                   <table> get <key>                     print all fields as field<TAB>value lines
                   <table> get <key> <field>             print one field value
+                                                        the key may be abbreviated if it stays unique
                   <table> rm <key>                      remove a record
                   <table> rm <key> <field>              remove one field
                   <table> keys                          print all keys, sorted
@@ -339,6 +343,26 @@ interface Control {
             Boundary.fail("no such key: " + key);
         }
         return fields(page);
+    }
+
+    /// Resolves a possibly abbreviated key to a stored one: an exact key always
+    /// wins, otherwise the key is taken as a case-insensitive substring and has to
+    /// single out one record. Several hits end the command listing them — picking
+    /// one of them would be a guess about which record was meant.
+    static String resolveKey(String table, String key) throws Exception {
+        if (Files.exists(recordPage(table, key))) {
+            return key;
+        }
+        var matches = keys(table).stream()
+                .filter(candidate -> candidate.toLowerCase().contains(key.toLowerCase()))
+                .toList();
+        if (matches.isEmpty()) {
+            Boundary.fail("no such key: " + key);
+        }
+        if (matches.size() > 1) {
+            Boundary.fail("ambiguous key: %s matches %s".formatted(key, String.join(", ", matches)));
+        }
+        return matches.getFirst();
     }
 
     static void deleteRecord(String table, String key) throws Exception {
