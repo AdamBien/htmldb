@@ -7,7 +7,7 @@ interface Boundary {
 
     String TOOL = "zhtmldb";
     String NAME = MethodHandles.lookup().lookupClass().getEnclosingClass().getName();
-    String VERSION = "2026-09-18.1";
+    String VERSION = "2026-09-18.2";
 
     /// A parsed command line: the table, the command word and the arguments past
     /// them — so commands count their parameters from zero instead of skipping
@@ -64,15 +64,17 @@ interface Boundary {
     /// shapes, tried in order: a lone comma-bearing argument is positional CSV by
     /// column order, a lone bare name reads its value from stdin, otherwise each
     /// argument is a `field=value` pair. A `+` before the `=` — or after a lone
-    /// name — appends instead of replacing.
+    /// name — appends instead of replacing. The key may be abbreviated, as long as
+    /// it singles out one record; an abbreviation matching none is taken as the key
+    /// of a new record.
     static void set(Invocation invocation) throws Exception {
         var parameters = invocation.parameters();
         if (parameters.size() < 2) {
             fail("usage: " + NAME + " <table> set <key> <field>[+]=<value>... | <field>[+] (value from stdin), + appends");
         }
         var table = invocation.table();
-        var key = parameters.getFirst();
-        Control.validate(key, "key");
+        Control.validate(parameters.getFirst(), "key");
+        var key = Control.resolvedOrNewKey(table, parameters.getFirst());
         var record = Control.record(table, key);
         var assignments = parameters.subList(1, parameters.size());
         if (assignments.size() == 1 && !assignments.getFirst().contains("=") && assignments.getFirst().contains(",")) {
@@ -129,13 +131,15 @@ interface Boundary {
         }
     }
 
+    /// Removes a record, or one of its fields. The key may be abbreviated, as long
+    /// as it singles out one record.
     static void rm(Invocation invocation) throws Exception {
         var parameters = invocation.parameters();
         if (parameters.isEmpty()) {
             fail("usage: " + NAME + " <table> rm <key> [field]");
         }
         var table = invocation.table();
-        var key = parameters.getFirst();
+        var key = Control.resolveKey(table, parameters.getFirst());
         if (parameters.size() > 1) {
             var record = Control.existingRecord(table, key);
             if (record.remove(parameters.get(1)) == null) {
@@ -221,7 +225,6 @@ interface Boundary {
                   <table> columns                       print the column order
                   <table> get <key>                     print all fields as field<TAB>value lines
                   <table> get <key> <field>             print one field value
-                                                        the key may be abbreviated if it stays unique
                   <table> rm <key>                      remove a record
                   <table> rm <key> <field>              remove one field
                   <table> keys                          print all keys, sorted
@@ -234,6 +237,10 @@ interface Boundary {
                 A term filters case-insensitively: <text> matches any field or the key,
                 <field>=<text> only that field, <field>= the records having it at all.
                 Several terms narrow each other - every one of them has to match.
+
+                A <key> may be abbreviated in set, get and rm: an exact key wins, otherwise
+                it is a case-insensitive substring and has to match exactly one record - an
+                ambiguous abbreviation is an error. For set, matching none means a new record.
 
                 Table, key and field names: letters, digits, _ and - ('index' is a reserved table/key name)
 
@@ -345,24 +352,34 @@ interface Control {
         return fields(page);
     }
 
+    /// Resolves a possibly abbreviated key to a stored one for the commands reading
+    /// or removing a record: an abbreviation matching nothing is a miss, since
+    /// `get` and `rm` only make sense on an existing record.
+    static String resolveKey(String table, String key) throws Exception {
+        var resolved = resolvedOrNewKey(table, key);
+        if (!Files.exists(recordPage(table, resolved))) {
+            Boundary.fail("no such key: " + key);
+        }
+        return resolved;
+    }
+
     /// Resolves a possibly abbreviated key to a stored one: an exact key always
     /// wins, otherwise the key is taken as a case-insensitive substring and has to
     /// single out one record. Several hits end the command listing them — picking
-    /// one of them would be a guess about which record was meant.
-    static String resolveKey(String table, String key) throws Exception {
-        if (Files.exists(recordPage(table, key))) {
+    /// one of them would be a guess about which record was meant. An abbreviation
+    /// matching nothing stays the key it is, so `set` still creates a record under
+    /// a key not stored yet.
+    static String resolvedOrNewKey(String table, String key) throws Exception {
+        if (Files.exists(recordPage(table, key)) || !Files.isDirectory(DB_DIR.resolve(table))) {
             return key;
         }
         var matches = keys(table).stream()
                 .filter(candidate -> candidate.toLowerCase().contains(key.toLowerCase()))
                 .toList();
-        if (matches.isEmpty()) {
-            Boundary.fail("no such key: " + key);
-        }
         if (matches.size() > 1) {
             Boundary.fail("ambiguous key: %s matches %s".formatted(key, String.join(", ", matches)));
         }
-        return matches.getFirst();
+        return matches.isEmpty() ? key : matches.getFirst();
     }
 
     static void deleteRecord(String table, String key) throws Exception {

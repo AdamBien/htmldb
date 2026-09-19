@@ -62,7 +62,9 @@ zhtmldb users get duke email                 # → duke@airhacks.com
 zhtmldb users get duk                        # partial key: matches duke, as long as it stays unique
 echo "Java Champion" | zhtmldb users set duke bio  # field value from stdin
 cat notes.txt | zhtmldb notes set n1 body+         # trailing + appends the stdin value
+zhtmldb talks set 142122 category=done       # partial key on set: updates the matching record
 zhtmldb users rm duke twitter                # remove one field
+zhtmldb users rm duk                         # partial key on rm: removes the matching record
 zhtmldb users rm duke                        # remove the record
 zhtmldb users keys                           # all keys, sorted
 zhtmldb users list                           # all records as an aligned table
@@ -82,7 +84,7 @@ zhtmldb tables                               # → config, users
 
 `find` and `list` take the same filter terms and differ only in output: `find` prints key<TAB>label to pipe, `list` renders the matching records as a table to read. A term is `<text>` (matching any field value or the key), `<field>=<text>` (matching that one field) or `<field>=` (records carrying the field at all); several terms narrow each other, so `category=todo priority=high` matches records satisfying both. A filter that matches nothing exits 1 — an unfiltered `list` of an empty table does not, since nothing was searched for.
 
-`get` resolves its key by exact match first, then as a case-insensitive substring of the stored keys — `get 142122` reaches a timestamp record without typing the date. An abbreviation matching several keys exits 1 and lists them, rather than picking one.
+`set`, `get` and `rm` resolve their key by exact match first, then as a case-insensitive substring of the stored keys — `get 142122` reaches a timestamp record without typing the date. An abbreviation matching several keys exits 1 and lists them, rather than picking one. For `get` and `rm` an abbreviation matching none exits 1; `set` creates records, so there it is simply the key of a new record — which means a new key that happens to be a substring of an existing one updates that record instead.
 
 Data goes to stdout, diagnostics and the version banner to stderr — pipe-friendly. `keys`, `get` and `find` emit tab separated values for scripting; `list` is the one command formatted for reading, padding its columns and cutting long values, so pipe `find` rather than `list`. Exit code 0 on success, 1 on missing keys, missing tables, no match, or usage errors.
 
